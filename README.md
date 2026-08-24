@@ -20,3 +20,7 @@ Coming soon at [daniyalzia.co.uk/gambit](https://daniyalzia.co.uk/gambit).
 client/   — Three.js frontend (Vite)
 server/   — Node.js backend (Express + Socket.io)
 ```
+
+## Assets
+
+Character models in `client/public/models/` (Cleric, Monk, Rogue, Warrior, Wizard) are from Quaternius's "RPG Character Pack," [CC0 licensed](https://creativecommons.org/publicdomain/zero/1.0/) — free for personal and commercial use, no attribution required. Source: [quaternius.com](https://quaternius.com/packs/rpgcharacters.html).

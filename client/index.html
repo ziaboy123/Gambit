@@ -4,10 +4,89 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Gambit</title>
-  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="/src/style.css" />
 </head>
 <body>
   <canvas id="canvas"></canvas>
+
+  <div id="menu-screen" class="menu-screen">
+    <div class="menu-panel">
+      <div class="menu-brand">GAMBIT</div>
+      <div class="menu-tagline">Medieval chess, in three dimensions.</div>
+
+      <div id="menu-home" class="menu-view">
+        <button id="menu-play-ai" class="menu-btn menu-btn-primary">Play vs AI</button>
+        <button id="menu-play-online" class="menu-btn">Play Online</button>
+      </div>
+
+      <div id="menu-online" class="menu-view hidden">
+        <div class="menu-section">
+          <div class="menu-section-title">Host a Game</div>
+          <input id="host-name" class="menu-input" type="text" placeholder="Your name" maxlength="20" />
+          <input id="host-password" class="menu-input" type="text" placeholder="Password (optional)" maxlength="20" />
+          <select id="host-timecontrol" class="menu-input menu-select">
+            <option value="untimed">Untimed</option>
+            <option value="bullet">Bullet · 2+1</option>
+            <option value="blitz">Blitz · 5+0</option>
+            <option value="rapid">Rapid · 10+0</option>
+            <option value="classical">Classical · 30+0</option>
+          </select>
+          <button id="host-create" class="menu-btn menu-btn-primary">Create Lobby</button>
+        </div>
+        <div class="menu-divider"></div>
+        <div class="menu-section">
+          <div class="menu-section-title">Join a Game</div>
+          <input id="join-name" class="menu-input" type="text" placeholder="Your name" maxlength="20" />
+          <input id="join-code" class="menu-input menu-input-code" type="text" placeholder="Room code" maxlength="6" />
+          <input id="join-password" class="menu-input" type="text" placeholder="Password (if required)" maxlength="20" />
+          <button id="join-submit" class="menu-btn menu-btn-primary">Join Lobby</button>
+        </div>
+        <div class="menu-divider"></div>
+        <div class="menu-section">
+          <div class="menu-section-title">Open Games</div>
+          <div id="lobby-list" class="lobby-list">
+            <div class="lobby-list-empty">No open games right now.</div>
+          </div>
+        </div>
+        <div id="online-error" class="menu-error"></div>
+        <button id="menu-back" class="menu-btn menu-btn-ghost">Back</button>
+      </div>
+
+      <div id="menu-waiting" class="menu-view hidden">
+        <div class="menu-section-title">Room Code</div>
+        <div id="lobby-code-display" class="lobby-code"></div>
+        <div id="lobby-status" class="menu-status">Waiting for an opponent to join…</div>
+        <button id="lobby-cancel" class="menu-btn menu-btn-ghost">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="ui" class="hidden">
+    <header id="topbar">
+      <div class="brand">GAMBIT</div>
+      <div id="turn-indicator" class="turn-indicator">White to move</div>
+      <div id="clocks" class="clocks hidden">
+        <div id="clock-opponent" class="clock">--:--</div>
+        <div id="clock-me" class="clock clock-active">--:--</div>
+      </div>
+      <div id="difficulty-select" class="difficulty-select">
+        <button data-level="squire" class="diff-btn active">Squire</button>
+        <button data-level="knight" class="diff-btn">Knight</button>
+        <button data-level="lord" class="diff-btn">Lord Commander</button>
+      </div>
+      <button id="new-game" class="new-game-btn">New Game</button>
+      <button id="resign-btn" class="resign-btn hidden">Resign</button>
+    </header>
+
+    <aside id="sidebar">
+      <div id="opponent-info" class="opponent-info hidden"></div>
+      <div class="sidebar-title">Move History</div>
+      <ol id="move-list"></ol>
+      <div id="game-status"></div>
+      <button id="rematch-btn" class="menu-btn menu-btn-primary rematch-btn hidden">Request Rematch</button>
+    </aside>
+  </div>
+
   <script type="module" src="/src/main.js"></script>
 </body>
 </html>
