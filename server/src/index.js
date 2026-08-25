@@ -350,14 +350,16 @@ io.on('connection', (socket) => {
   });
 });
 
-// Serves the built client (client/dist) and falls back to its index.html
-// for any other GET, so the SPA loads on a fresh page navigation. In
-// production this sits behind an nginx location that strips the /gambit
-// prefix before proxying here, so paths below are root-relative.
+// Serves the built client (client/dist) under /gambit and falls back to
+// its index.html for any other GET under that path, so the SPA loads on
+// a fresh page navigation. Matches the sibling apps' nginx pattern (no
+// prefix-stripping — proxy_pass with no URI part forwards the request
+// untouched), which is also why /api and /socket.io stay unprefixed at
+// root: the client hardcodes window.location.origin with no /gambit path.
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const clientDist = path.join(__dirname, '../../client/dist');
-app.use(express.static(clientDist));
-app.get(/^(?!\/api|\/socket\.io|\/health).*/, (_req, res) => {
+app.use('/gambit', express.static(clientDist));
+app.get(/^\/gambit(\/.*)?$/, (_req, res) => {
   res.sendFile(path.join(clientDist, 'index.html'));
 });
 
