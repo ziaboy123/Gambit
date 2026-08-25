@@ -3,17 +3,80 @@ import { createServer } from 'http';
 import { Server } from 'socket.io';
 import { LobbyStore } from './lobby.js';
 import { resolveTimeControl } from './timeControls.js';
+import { createToken, verifyToken } from './auth.js';
+import {
+  registerUser, authenticateUser, getUserById, getRatings,
+  getLeaderboard, getHistory, getGame, recordGame,
+} from './accounts.js';
 
 const PORT = process.env.PORT || 3004;
 const RECONNECT_GRACE_MS = 30000;
 
 const app = express();
+app.use(express.json());
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.header('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  next();
+});
+
 const httpServer = createServer(app);
 const io = new Server(httpServer, {
   cors: { origin: '*' },
 });
 
 app.get('/health', (_req, res) => res.json({ ok: true }));
+
+// ── Accounts (REST) ──────────────────────────────────────────────────
+
+app.post('/api/register', (req, res) => {
+  const { username, password } = req.body || {};
+  const result = registerUser(username, password);
+  if (result.error) return res.status(400).json(result);
+  res.json({ token: createToken({ id: result.id, username: result.username }), user: result });
+});
+
+app.post('/api/login', (req, res) => {
+  const { username, password } = req.body || {};
+  const result = authenticateUser(username, password);
+  if (result.error) return res.status(401).json(result);
+  res.json({ token: createToken({ id: result.id, username: result.username }), user: result });
+});
+
+function requireAuth(req, res, next) {
+  const header = req.headers.authorization || '';
+  const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+  const payload = verifyToken(token);
+  if (!payload) return res.status(401).json({ error: 'Not authenticated.' });
+  req.userId = payload.id;
+  next();
+}
+
+app.get('/api/me', requireAuth, (req, res) => {
+  const user = getUserById(req.userId);
+  if (!user) return res.status(404).json({ error: 'User not found.' });
+  res.json({ user, ratings: getRatings(user.id) });
+});
+
+app.get('/api/leaderboard', (req, res) => {
+  res.json(getLeaderboard(req.query.timeControl || 'blitz'));
+});
+
+app.get('/api/history/:userId', (req, res) => {
+  const userId = Number(req.params.userId);
+  if (!Number.isInteger(userId)) return res.status(400).json({ error: 'Invalid user id.' });
+  res.json(getHistory(userId));
+});
+
+app.get('/api/game/:id', (req, res) => {
+  const game = getGame(Number(req.params.id));
+  if (!game) return res.status(404).json({ error: 'Game not found.' });
+  res.json(game);
+});
+
+// ── Realtime game ────────────────────────────────────────────────────
 
 const store = new LobbyStore();
 
@@ -40,34 +103,85 @@ function scheduleFlagTimer(lobby) {
 
   const toMove = lobby.chess.turn();
   const ms = Math.max(lobby.clocks[toMove], 0);
-  lobby.flagTimer = setTimeout(() => finishByTimeout(lobby, toMove), ms);
+  lobby.flagTimer = setTimeout(() => finishGame(lobby, { result: 'timeout', winner: toMove === 'w' ? 'b' : 'w' }), ms);
 }
 
-function finishByTimeout(lobby, loserColor) {
-  if (lobby.status !== 'active') return;
+// How the current position ends, if it's over — `winner` is filled in by
+// the caller for checkmate (whoever just moved), stays null for draws.
+function describeGameOver(chess) {
+  if (chess.isCheckmate()) return { result: 'checkmate' };
+  if (chess.isStalemate()) return { result: 'stalemate' };
+  if (chess.isDraw()) return { result: 'draw' };
+  return null;
+}
+
+// The single place a game actually ends, regardless of how (checkmate,
+// resignation, timeout, draw). Saves the game and — only when both seats
+// are logged-in accounts — updates ELO for that time control.
+function finishGame(lobby, { result, winner }) {
+  if (lobby.status === 'finished') return null; // already recorded — e.g. both sides' grace timers firing
   lobby.status = 'finished';
-  lobby.clocks[loserColor] = 0;
-  io.to(lobby.code).emit('game-over', { reason: 'timeout', winner: loserColor === 'w' ? 'b' : 'w' });
+  if (lobby.flagTimer) clearTimeout(lobby.flagTimer);
+  lobby.flagTimer = null;
+
+  const record = recordGame({
+    whiteUserId: lobby.players.w?.userId || null,
+    blackUserId: lobby.players.b?.userId || null,
+    whiteName: lobby.players.w?.name || 'White',
+    blackName: lobby.players.b?.name || 'Black',
+    timeControl: lobby.timeControl,
+    result,
+    winner: winner ?? null,
+    moves: lobby.chess.history(),
+  });
+
+  io.to(lobby.code).emit('game-over', { result, winner: winner ?? null, ratings: record });
+  return record;
+}
+
+// A socket must belong to exactly one lobby room at a time — otherwise a
+// stale event from a lobby it previously left (an abandoned test game, a
+// rejoin that failed, a spectated match) can bleed into whatever game it's
+// actually in now. socket.io auto-joins a room matching the socket's own
+// id; that one is left alone.
+function joinLobbyRoom(socket, code) {
+  for (const room of socket.rooms) {
+    if (room !== socket.id) socket.leave(room);
+  }
+  socket.join(code);
 }
 
 io.on('connection', (socket) => {
+  const authPayload = verifyToken(socket.handshake.auth?.token);
+  if (authPayload) {
+    const user = getUserById(authPayload.id);
+    if (user) socket.user = user;
+  }
+
   socket.on('create-lobby', ({ name, password, timeControl } = {}, ack) => {
     const { lobby, hostColor, token } = store.create({
       hostSocketId: socket.id,
-      hostName: name || 'Host',
+      hostName: socket.user?.username || name || 'Host',
+      hostUserId: socket.user?.id || null,
       password,
       timeControl,
     });
-    socket.join(lobby.code);
+    joinLobbyRoom(socket, lobby.code);
     ack?.({ ok: true, code: lobby.code, color: hostColor, token, state: publicState(lobby) });
   });
 
   socket.on('join-lobby', ({ code, name, password } = {}, ack) => {
-    const result = store.join({ code: (code || '').toUpperCase(), socketId: socket.id, name: name || 'Guest', password });
+    const result = store.join({
+      code: (code || '').toUpperCase(),
+      socketId: socket.id,
+      name: socket.user?.username || name || 'Guest',
+      userId: socket.user?.id || null,
+      password,
+    });
     if (result.error) { ack?.({ ok: false, error: result.error }); return; }
 
     const { lobby, color, token } = result;
-    socket.join(lobby.code);
+    joinLobbyRoom(socket, lobby.code);
     scheduleFlagTimer(lobby);
     ack?.({ ok: true, code: lobby.code, color, token, state: publicState(lobby) });
     socket.to(lobby.code).emit('opponent-joined', { state: publicState(lobby) });
@@ -76,14 +190,14 @@ io.on('connection', (socket) => {
   socket.on('spectate-lobby', ({ code } = {}, ack) => {
     const result = store.spectate({ code: (code || '').toUpperCase(), socketId: socket.id });
     if (result.error) { ack?.({ ok: false, error: result.error }); return; }
-    socket.join(result.lobby.code);
+    joinLobbyRoom(socket, result.lobby.code);
     ack?.({ ok: true, state: publicState(result.lobby) });
   });
 
   socket.on('rejoin-lobby', ({ code, token } = {}, ack) => {
     const result = store.reclaim({ code: (code || '').toUpperCase(), token, socketId: socket.id });
     if (result.error) { ack?.({ ok: false, error: result.error }); return; }
-    socket.join(result.lobby.code);
+    joinLobbyRoom(socket, result.lobby.code);
     ack?.({ ok: true, color: result.color, state: publicState(result.lobby) });
     socket.to(result.lobby.code).emit('opponent-reconnected', { color: result.color });
   });
@@ -104,7 +218,7 @@ io.on('connection', (socket) => {
       const elapsed = Date.now() - lobby.lastMoveAt;
       const remaining = lobby.clocks[color] - elapsed;
       if (remaining <= 0) {
-        finishByTimeout(lobby, color);
+        finishGame(lobby, { result: 'timeout', winner: color === 'w' ? 'b' : 'w' });
         ack?.({ ok: false, error: 'Time expired.' });
         return;
       }
@@ -124,31 +238,29 @@ io.on('connection', (socket) => {
     }
     lobby.lastMoveAt = Date.now();
 
-    if (lobby.chess.isGameOver()) {
-      lobby.status = 'finished';
-      if (lobby.flagTimer) clearTimeout(lobby.flagTimer);
-      lobby.flagTimer = null;
-    } else {
-      scheduleFlagTimer(lobby);
-    }
+    const over = describeGameOver(lobby.chess);
+    if (!over) scheduleFlagTimer(lobby); // if it's over, finishGame() below clears the timer instead
 
     ack?.({ ok: true });
     io.to(lobby.code).emit('move-made', {
       move: moveResult,
       fen: lobby.chess.fen(),
-      isGameOver: lobby.chess.isGameOver(),
+      isGameOver: !!over,
       clocks: lobby.clocks,
     });
+
+    if (over) {
+      const winner = over.result === 'checkmate' ? color : null;
+      finishGame(lobby, { result: over.result, winner });
+    }
   });
 
   socket.on('resign', (_payload, ack) => {
     const lobby = store.getBySocket(socket.id);
     if (!lobby) { ack?.({ ok: false }); return; }
     const color = store.colorOf(lobby, socket.id);
-    lobby.status = 'finished';
-    if (lobby.flagTimer) clearTimeout(lobby.flagTimer);
-    lobby.flagTimer = null;
-    io.to(lobby.code).emit('opponent-resigned', { color });
+    if (!color) { ack?.({ ok: false }); return; }
+    finishGame(lobby, { result: 'resignation', winner: color === 'w' ? 'b' : 'w' });
     ack?.({ ok: true });
   });
 
@@ -182,8 +294,10 @@ io.on('connection', (socket) => {
     socket.to(lobby.code).emit('opponent-disconnected', { color });
 
     lobby.disconnectTimers[color] = setTimeout(() => {
+      if (lobby.status === 'active') {
+        finishGame(lobby, { result: 'abandonment', winner: color === 'w' ? 'b' : 'w' });
+      }
       store.finalizeDisconnect(lobby, color);
-      io.to(lobby.code).emit('opponent-left', { color });
     }, RECONNECT_GRACE_MS);
   });
 });

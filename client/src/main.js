@@ -9,6 +9,7 @@ import { Picker } from './interaction/picker.js';
 import { requestAIMove } from './ai/ai.js';
 import { UI } from './ui/ui.js';
 import { connectSocket, emitAck } from './network/socket.js';
+import { register, login, clearToken, fetchMe, fetchLeaderboard, fetchHistory, fetchGame } from './network/auth.js';
 
 const canvas = document.getElementById('canvas');
 const { scene, camera, renderer, controls, composer, defaultCameraPos } = setupScene(canvas);
@@ -270,15 +271,159 @@ const uiRoot = document.getElementById('ui');
 const menuHome = document.getElementById('menu-home');
 const menuOnline = document.getElementById('menu-online');
 const menuWaiting = document.getElementById('menu-waiting');
+const menuAuth = document.getElementById('menu-auth');
+const menuLeaderboard = document.getElementById('menu-leaderboard');
+const menuHistory = document.getElementById('menu-history');
 const onlineError = document.getElementById('online-error');
 const opponentInfo = document.getElementById('opponent-info');
 const lobbyListEl = document.getElementById('lobby-list');
 
+const ALL_MENU_VIEWS = [menuHome, menuOnline, menuWaiting, menuAuth, menuLeaderboard, menuHistory];
+
 function showMenuView(view) {
-  [menuHome, menuOnline, menuWaiting].forEach((v) => v.classList.add('hidden'));
+  ALL_MENU_VIEWS.forEach((v) => v.classList.add('hidden'));
   view.classList.remove('hidden');
   onlineError.textContent = '';
   if (view === menuOnline) startLobbyPolling(); else stopLobbyPolling();
+}
+
+// ── Account ──────────────────────────────────────────────────────────
+
+let currentUser = null; // { id, username } | null
+
+const accountGuest = document.getElementById('account-guest');
+const accountLoggedIn = document.getElementById('account-loggedin');
+const accountUsername = document.getElementById('account-username');
+const menuHistoryBtn = document.getElementById('menu-history-btn');
+
+function setCurrentUser(user) {
+  currentUser = user;
+  accountGuest.classList.toggle('hidden', !!user);
+  accountLoggedIn.classList.toggle('hidden', !user);
+  menuHistoryBtn.classList.toggle('hidden', !user);
+  if (user) {
+    accountUsername.textContent = user.username;
+    document.getElementById('host-name').value = user.username;
+    document.getElementById('join-name').value = user.username;
+  }
+}
+
+async function restoreSession() {
+  const res = await fetchMe();
+  if (res.ok) setCurrentUser(res.data.user);
+}
+restoreSession();
+
+document.getElementById('account-login-btn').addEventListener('click', () => {
+  setAuthMode('login');
+  showMenuView(menuAuth);
+});
+
+document.getElementById('account-logout-btn').addEventListener('click', () => {
+  clearToken();
+  setCurrentUser(null);
+});
+
+let authMode = 'login';
+const authTitle = document.getElementById('auth-title');
+const authSubmit = document.getElementById('auth-submit');
+const authToggle = document.getElementById('auth-toggle');
+const authError = document.getElementById('auth-error');
+
+function setAuthMode(mode) {
+  authMode = mode;
+  const isLogin = mode === 'login';
+  authTitle.textContent = isLogin ? 'Log In' : 'Register';
+  authSubmit.textContent = isLogin ? 'Log In' : 'Create Account';
+  authToggle.textContent = isLogin ? 'Need an account? Register' : 'Already have an account? Log in';
+  authError.textContent = '';
+}
+
+authToggle.addEventListener('click', () => setAuthMode(authMode === 'login' ? 'register' : 'login'));
+
+authSubmit.addEventListener('click', async () => {
+  const username = document.getElementById('auth-username').value.trim();
+  const password = document.getElementById('auth-password').value;
+  if (!username || !password) { authError.textContent = 'Enter a username and password.'; return; }
+
+  const res = authMode === 'login' ? await login(username, password) : await register(username, password);
+  if (!res.ok) { authError.textContent = res.error; return; }
+
+  setCurrentUser(res.data.user);
+  document.getElementById('auth-username').value = '';
+  document.getElementById('auth-password').value = '';
+  showMenuView(menuHome);
+});
+
+document.getElementById('auth-back').addEventListener('click', () => showMenuView(menuHome));
+
+// ── Leaderboard ──────────────────────────────────────────────────────
+
+const leaderboardList = document.getElementById('leaderboard-list');
+const leaderboardTimeControl = document.getElementById('leaderboard-timecontrol');
+
+document.getElementById('menu-leaderboard-btn').addEventListener('click', () => {
+  showMenuView(menuLeaderboard);
+  refreshLeaderboard();
+});
+document.getElementById('leaderboard-back').addEventListener('click', () => showMenuView(menuHome));
+leaderboardTimeControl.addEventListener('change', refreshLeaderboard);
+
+async function refreshLeaderboard() {
+  leaderboardList.innerHTML = '<div class="ranked-empty">Loading…</div>';
+  const res = await fetchLeaderboard(leaderboardTimeControl.value);
+  const list = res.ok ? res.data : [];
+  if (!list.length) {
+    leaderboardList.innerHTML = '<div class="ranked-empty">No rated games yet for this time control.</div>';
+    return;
+  }
+  leaderboardList.innerHTML = '';
+  list.forEach((row, i) => {
+    const el = document.createElement('div');
+    el.className = 'ranked-row';
+    el.innerHTML = `
+      <span class="ranked-rank">${i + 1}</span>
+      <span class="ranked-name">${escapeHtml(row.username)}</span>
+      <span class="ranked-meta">${row.gamesPlayed} games</span>
+      <span class="ranked-elo">${row.elo}</span>
+    `;
+    leaderboardList.appendChild(el);
+  });
+}
+
+// ── Match history / replay ──────────────────────────────────────────
+
+const historyList = document.getElementById('history-list');
+
+menuHistoryBtn.addEventListener('click', () => {
+  showMenuView(menuHistory);
+  refreshHistory();
+});
+document.getElementById('history-back').addEventListener('click', () => showMenuView(menuHome));
+
+async function refreshHistory() {
+  if (!currentUser) return;
+  historyList.innerHTML = '<div class="ranked-empty">Loading…</div>';
+  const res = await fetchHistory(currentUser.id);
+  const list = res.ok ? res.data : [];
+  if (!list.length) {
+    historyList.innerHTML = '<div class="ranked-empty">No games played yet.</div>';
+    return;
+  }
+  historyList.innerHTML = '';
+  list.forEach((row) => {
+    const delta = row.rated ? row.ratingAfter - row.ratingBefore : null;
+    const el = document.createElement('div');
+    el.className = 'ranked-row clickable';
+    el.innerHTML = `
+      <span class="ranked-outcome outcome-${row.outcome}">${row.outcome}</span>
+      <span class="ranked-name">vs ${escapeHtml(row.opponent)}</span>
+      <span class="ranked-meta">${escapeHtml(row.timeControl)} · ${row.result}</span>
+      <span class="ranked-elo">${row.rated ? `${delta >= 0 ? '+' : ''}${delta}` : '—'}</span>
+    `;
+    el.addEventListener('click', () => openReplay(row.id));
+    historyList.appendChild(el);
+  });
 }
 
 function waitForModels() {
@@ -323,6 +468,7 @@ async function startGame({ mode, color, state }) {
   resignBtn.classList.toggle('hidden', !online);
   document.getElementById('difficulty-select').classList.toggle('hidden', online || spectating);
   document.getElementById('new-game').classList.toggle('hidden', spectating);
+  document.getElementById('replay-controls').classList.add('hidden');
   rematchBtn.classList.add('hidden');
 
   if (mode === 'ai' && chess.turn() !== myColor) {
@@ -331,6 +477,68 @@ async function startGame({ mode, color, state }) {
     inputLocked = spectating || chess.turn() !== myColor;
   }
 }
+
+// ── Replay ───────────────────────────────────────────────────────────
+
+let replayMoves = [];
+let replayIndex = 0;
+
+async function openReplay(gameId) {
+  const res = await fetchGame(gameId);
+  if (!res.ok) return;
+  const game = res.data;
+
+  await waitForModels();
+  stopLobbyPolling();
+  gameMode = 'replay';
+  myColor = 'w';
+  onlineGameEnded = false;
+  inputLocked = true;
+  replayMoves = game.moves;
+  replayIndex = replayMoves.length;
+
+  orientCameraForColor(camera, controls, defaultCameraPos, 'w');
+  syncClocks(null);
+
+  menuScreen.classList.add('hidden');
+  uiRoot.classList.remove('hidden');
+  opponentInfo.classList.remove('hidden');
+  opponentInfo.textContent = `${game.whiteName} vs ${game.blackName}`;
+  resignBtn.classList.add('hidden');
+  document.getElementById('difficulty-select').classList.add('hidden');
+  document.getElementById('new-game').classList.add('hidden');
+  rematchBtn.classList.add('hidden');
+  document.getElementById('replay-controls').classList.remove('hidden');
+
+  renderReplayPosition();
+}
+
+function renderReplayPosition() {
+  chess = new Chess();
+  for (let i = 0; i < replayIndex; i++) chess.move(replayMoves[i]);
+  pieceManager.buildFromBoard(chess);
+  clearHighlights(markerMeshes);
+  ui.renderHistory(chess.history());
+  ui.setTurn(chess.turn());
+  ui.setStatus('');
+  document.getElementById('replay-position').textContent = `${replayIndex} / ${replayMoves.length}`;
+  document.getElementById('replay-prev').disabled = replayIndex === 0;
+  document.getElementById('replay-next').disabled = replayIndex === replayMoves.length;
+}
+
+document.getElementById('replay-prev').addEventListener('click', () => {
+  if (replayIndex > 0) { replayIndex--; renderReplayPosition(); }
+});
+document.getElementById('replay-next').addEventListener('click', () => {
+  if (replayIndex < replayMoves.length) { replayIndex++; renderReplayPosition(); }
+});
+document.getElementById('replay-exit').addEventListener('click', () => {
+  document.getElementById('replay-controls').classList.add('hidden');
+  uiRoot.classList.add('hidden');
+  menuScreen.classList.remove('hidden');
+  showMenuView(menuHistory);
+  refreshHistory();
+});
 
 document.getElementById('menu-play-ai').addEventListener('click', () => {
   startGame({ mode: 'ai', color: 'w' });
@@ -367,33 +575,45 @@ function setupSocketListeners() {
     syncClocks(clocks); // re-sync to the server-authoritative time either way
   });
 
-  socket.on('game-over', ({ reason, winner }) => {
-    if (reason === 'timeout' && gameMode !== 'spectator') {
-      const won = winner === myColor;
-      ui.setStatus(won ? 'Opponent ran out of time — you win.' : 'You ran out of time — you lose.');
+  // The server is authoritative on how every game ends (checkmate,
+  // stalemate, draw, resignation, or timeout) and on any rating change —
+  // this one event covers all of them instead of several overlapping ones.
+  // For local move-based endings the client's own chess.js detection
+  // already shows an immediate status; this confirms it and appends the
+  // rating change once it's computed server-side.
+  socket.on('game-over', ({ result, winner, ratings }) => {
+    if (gameMode !== 'spectator') {
+      const iWon = winner === myColor;
+      let text;
+      switch (result) {
+        case 'timeout': text = iWon ? 'Opponent ran out of time — you win.' : 'You ran out of time — you lose.'; break;
+        case 'resignation': text = iWon ? 'Your opponent resigned — you win.' : 'You resigned.'; break;
+        case 'abandonment': text = iWon ? 'Your opponent left the game — you win.' : 'You left the game.'; break;
+        case 'checkmate': text = `Checkmate — ${iWon ? 'you win.' : 'you lose.'}`; break;
+        case 'stalemate': text = 'Stalemate — draw.'; break;
+        default: text = 'Draw.';
+      }
+      if (ratings?.rated) {
+        const before = myColor === 'w' ? ratings.whiteRatingBefore : ratings.blackRatingBefore;
+        const after = myColor === 'w' ? ratings.whiteRatingAfter : ratings.blackRatingAfter;
+        const delta = after - before;
+        text += `  Rating: ${before} → ${after} (${delta >= 0 ? '+' : ''}${delta})`;
+      }
+      ui.setStatus(text);
     }
     onGameEnded();
   });
 
   // A dropped connection doesn't end the game — the server holds the seat
-  // open for a reconnect window. Only `opponent-left` (grace period
-  // expired) actually ends it.
+  // open for a reconnect window. If it lapses, a `game-over` with
+  // result: 'abandonment' arrives instead (handled above), not a separate
+  // event.
   socket.on('opponent-disconnected', () => {
     if (gameMode === 'online') ui.setStatus('Opponent disconnected — waiting for them to reconnect…');
   });
 
   socket.on('opponent-reconnected', () => {
     if (gameMode === 'online' && !onlineGameEnded) updateStatusAfterMove();
-  });
-
-  socket.on('opponent-left', () => {
-    ui.setStatus('Your opponent left the game.');
-    onGameEnded();
-  });
-
-  socket.on('opponent-resigned', ({ color }) => {
-    ui.setStatus(color === myColor ? 'You resigned.' : 'Your opponent resigned — you win.');
-    onGameEnded();
   });
 
   socket.on('rematch-requested', () => {

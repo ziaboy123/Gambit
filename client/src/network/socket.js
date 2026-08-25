@@ -1,4 +1,5 @@
 import { io } from 'socket.io-client';
+import { getToken } from './auth.js';
 
 const SERVER_URL = import.meta.env.DEV ? 'http://localhost:3004' : window.location.origin;
 
@@ -6,7 +7,7 @@ let socket = null;
 
 export function connectSocket() {
   if (socket) return socket;
-  socket = io(SERVER_URL, { autoConnect: true });
+  socket = io(SERVER_URL, { autoConnect: true, auth: { token: getToken() } });
   return socket;
 }
 

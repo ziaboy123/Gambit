@@ -441,3 +441,117 @@ html, body {
   margin-top: 12px;
   width: 100%;
 }
+
+/* ── ACCOUNT BAR ── */
+.account-bar {
+  margin-bottom: 24px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid #3e3830;
+}
+
+.account-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.82rem;
+}
+
+.account-label {
+  color: var(--text-muted);
+}
+
+#account-username {
+  color: var(--gold-light);
+  font-weight: 600;
+}
+
+.account-link {
+  background: none;
+  border: none;
+  color: var(--gold);
+  font-family: 'Crimson Pro', Georgia, serif;
+  font-size: 0.82rem;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  padding: 0;
+}
+
+.account-link:hover { color: var(--gold-light); }
+
+/* ── RANKED LIST (leaderboard / history) ── */
+.ranked-list {
+  max-height: 340px;
+  overflow-y: auto;
+  border: 1px solid #3e3830;
+  border-radius: 3px;
+  margin: 14px 0;
+}
+
+.ranked-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-bottom: 1px solid #2a2620;
+  font-size: 0.85rem;
+}
+
+.ranked-row:last-child { border-bottom: none; }
+.ranked-row.clickable { cursor: pointer; }
+.ranked-row.clickable:hover { background: rgba(196,149,58,0.08); }
+
+.ranked-rank {
+  font-family: Georgia, serif;
+  font-weight: 700;
+  color: var(--text-muted);
+  width: 22px;
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.ranked-name {
+  flex: 1;
+  color: var(--parchment);
+  font-weight: 600;
+}
+
+.ranked-meta {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+}
+
+.ranked-elo {
+  font-family: Georgia, serif;
+  font-weight: 700;
+  color: var(--gold-light);
+  font-variant-numeric: tabular-nums;
+}
+
+.ranked-outcome {
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+.outcome-win { color: #6ea86e; background: rgba(110,168,110,0.12); }
+.outcome-loss { color: #d08080; background: rgba(138,31,31,0.12); }
+.outcome-draw { color: var(--text-muted); background: rgba(138,130,120,0.12); }
+
+.ranked-empty {
+  padding: 20px 12px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+/* ── REPLAY CONTROLS ── */
+.replay-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-left: auto;
+}

@@ -4,7 +4,9 @@ import { getModel } from './assetLoader.js';
 
 // Target standing height (world units) per piece type — establishes the
 // classic chess hierarchy silhouette (king/queen tallest, pawns shortest).
-const TARGET_HEIGHT = { p: 0.62, n: 0.78, b: 0.8, r: 0.72, q: 0.92, k: 1.0 };
+// Scaled up from the original set so pieces read as more substantial
+// against a 1-unit board square rather than looking undersized.
+const TARGET_HEIGHT = { p: 0.8, n: 1.0, b: 1.02, r: 0.92, q: 1.18, k: 1.28 };
 
 // Lerp factors (not multiply — multiply can only darken, never brighten a
 // naturally dark source texture, which broke the white faction entirely).
@@ -182,6 +184,10 @@ function buildRookTower(color) {
   group.traverse((obj) => {
     if (obj.isMesh) { obj.castShadow = true; obj.receiveShadow = true; }
   });
+
+  // Native height is ~0.75; scale up to match TARGET_HEIGHT.r (0.92) so the
+  // rook sits at the same relative scale as the character pieces.
+  group.scale.setScalar(0.92 / 0.75);
 
   return group;
 }

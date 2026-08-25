@@ -17,8 +17,8 @@ function freshClocks(timeControlKey) {
   return tc.baseMs == null ? null : { w: tc.baseMs, b: tc.baseMs };
 }
 
-function makePlayer(socketId, name) {
-  return { socketId, name, token: randomUUID(), connected: true };
+function makePlayer(socketId, name, userId) {
+  return { socketId, name, userId: userId || null, token: randomUUID(), connected: true };
 }
 
 export class LobbyStore {
@@ -27,11 +27,11 @@ export class LobbyStore {
     this.socketToLobby = new Map(); // socketId -> code
   }
 
-  create({ hostSocketId, hostName, password, timeControl }) {
+  create({ hostSocketId, hostName, hostUserId, password, timeControl }) {
     const code = generateCode(this.lobbies);
     const hostColor = Math.random() < 0.5 ? 'w' : 'b';
     const timeControlKey = timeControl || 'untimed';
-    const hostPlayer = makePlayer(hostSocketId, hostName);
+    const hostPlayer = makePlayer(hostSocketId, hostName, hostUserId);
     const lobby = {
       code,
       password: password || null,
@@ -55,14 +55,14 @@ export class LobbyStore {
     return { lobby, hostColor, token: hostPlayer.token };
   }
 
-  join({ code, socketId, name, password }) {
+  join({ code, socketId, name, userId, password }) {
     const lobby = this.lobbies.get(code);
     if (!lobby) return { error: 'No lobby found with that code.' };
     if (lobby.password && lobby.password !== password) return { error: 'Incorrect password.' };
     if (lobby.players.w && lobby.players.b) return { error: 'That lobby is already full.' };
 
     const joinColor = lobby.players.w ? 'b' : 'w';
-    const player = makePlayer(socketId, name);
+    const player = makePlayer(socketId, name, userId);
     lobby.players[joinColor] = player;
     lobby.status = 'active';
     lobby.lastMoveAt = Date.now();
