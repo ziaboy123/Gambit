@@ -5,24 +5,21 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
-import { generateNightSky, generateStoneTexture } from './textures.js';
+import { generateNightSky, generateSkyGradient, generateStoneTexture } from './textures.js';
+import { THEMES } from './themes.js';
 
-function buildSkydome(scene) {
-  const tex = generateNightSky([
-    [0, '#03040a'],
-    [0.4, '#080a16'],
-    [0.68, '#121628'],
-    [0.85, '#232538'],
-    [1, '#0a0912'],
-  ], 5, 1024);
+function buildSkydome(scene, theme) {
+  const tex = theme.sky.type === 'night'
+    ? generateNightSky(theme.sky.stops, 5, 1024)
+    : generateSkyGradient(theme.sky.stops, 4, 1024);
   const geo = new THREE.SphereGeometry(55, 24, 16);
   const mat = new THREE.MeshBasicMaterial({ map: tex, side: THREE.BackSide, fog: false });
   const dome = new THREE.Mesh(geo, mat);
   scene.add(dome);
 }
 
-function buildFloor(scene) {
-  const tex = generateStoneTexture('#1c1712', 91, 512);
+function buildFloor(scene, theme) {
+  const tex = generateStoneTexture(theme.floorColor, 91, 512);
   tex.repeat.set(10, 10);
   const mat = new THREE.MeshStandardMaterial({ map: tex, roughness: 0.95, metalness: 0.03 });
   const floor = new THREE.Mesh(new THREE.PlaneGeometry(50, 50), mat);
@@ -32,11 +29,11 @@ function buildFloor(scene) {
   scene.add(floor);
 }
 
-export function setupScene(canvas) {
+export function setupScene(canvas, theme = THEMES[0]) {
   const scene = new THREE.Scene();
-  scene.fog = new THREE.FogExp2(0x0e0f1a, 0.045);
-  buildSkydome(scene);
-  buildFloor(scene);
+  scene.fog = new THREE.FogExp2(theme.fog.color, theme.fog.density);
+  buildSkydome(scene, theme);
+  buildFloor(scene, theme);
 
   const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
   const DEFAULT_CAMERA_POS = new THREE.Vector3(0, 8.5, 8.5);
@@ -65,11 +62,14 @@ export function setupScene(canvas) {
   controls.maxPolarAngle = Math.PI * 0.48;
   controls.update();
 
-  // Torch-lit hall lighting
-  const ambient = new THREE.AmbientLight(0x9a8a6a, 0.32);
+  // Scene lighting — colors/intensities come from the chosen board theme;
+  // rig (positions) stays fixed since it's tuned to the board/camera layout.
+  const { ambient: ambientCfg, key: keyCfg, rim: rimCfg, glowA: glowACfg, glowB: glowBCfg } = theme.lights;
+
+  const ambient = new THREE.AmbientLight(ambientCfg.color, ambientCfg.intensity);
   scene.add(ambient);
 
-  const keyLight = new THREE.DirectionalLight(0xfff2d8, 0.95);
+  const keyLight = new THREE.DirectionalLight(keyCfg.color, keyCfg.intensity);
   keyLight.position.set(6, 10, 4);
   keyLight.castShadow = true;
   keyLight.shadow.mapSize.set(2048, 2048);
@@ -80,15 +80,15 @@ export function setupScene(canvas) {
   keyLight.shadow.bias = -0.0015;
   scene.add(keyLight);
 
-  const rimLight = new THREE.DirectionalLight(0x8fa8c4, 0.22);
+  const rimLight = new THREE.DirectionalLight(rimCfg.color, rimCfg.intensity);
   rimLight.position.set(-5, 4, -8);
   scene.add(rimLight);
 
-  const torchA = new THREE.PointLight(0xe08838, 0.7, 11, 2);
+  const torchA = new THREE.PointLight(glowACfg.color, glowACfg.intensity, 11, 2);
   torchA.position.set(-5.6, 2.6, -5.6);
   scene.add(torchA);
 
-  const torchB = new THREE.PointLight(0xe08838, 0.7, 11, 2);
+  const torchB = new THREE.PointLight(glowBCfg.color, glowBCfg.intensity, 11, 2);
   torchB.position.set(5.6, 2.6, 5.6);
   scene.add(torchB);
 

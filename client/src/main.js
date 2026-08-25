@@ -1,6 +1,6 @@
 import { Chess } from 'chess.js';
 import { setupScene, orientCameraForColor } from './scene/setupScene.js';
-import { buildBoard, showSelectMarker, showMoveMarkers, clearHighlights } from './scene/board.js';
+import { buildBoard, showSelectMarker, showMoveMarkers, clearHighlights, squareToPosition } from './scene/board.js';
 import { buildCoordinateLabels } from './scene/coordinateLabels.js';
 import { loadPieceModels } from './scene/assetLoader.js';
 import { PieceManager } from './scene/pieceManager.js';
@@ -12,10 +12,12 @@ import { UI } from './ui/ui.js';
 import { connectSocket, disconnectSocket, emitAck } from './network/socket.js';
 import { register, login, clearToken, fetchMe, fetchLeaderboard, fetchHistory, fetchGame } from './network/auth.js';
 import { fetchDailyPuzzle, submitPuzzleAttempt } from './network/puzzle.js';
+import { THEMES, getTheme, setTheme } from './scene/themes.js';
 
+const activeTheme = getTheme();
 const canvas = document.getElementById('canvas');
-const { scene, camera, renderer, controls, composer, defaultCameraPos } = setupScene(canvas);
-const { tileMeshes, markerMeshes } = buildBoard(scene);
+const { scene, camera, renderer, controls, composer, defaultCameraPos } = setupScene(canvas, activeTheme);
+const { tileMeshes, markerMeshes } = buildBoard(scene, activeTheme);
 buildCoordinateLabels(scene);
 const pieceManager = new PieceManager(scene);
 const cinematicCamera = new CinematicCamera(camera, controls);
@@ -73,12 +75,33 @@ loadPieceModels().then(() => {
   modelsReady = true;
 });
 
+// Scans the board for a color's king, for the victory cinematic to zoom in on.
+function findKingSquare(color) {
+  const board = chess.board();
+  for (let r = 0; r < 8; r++) {
+    for (let f = 0; f < 8; f++) {
+      const piece = board[r][f];
+      if (piece && piece.type === 'k' && piece.color === color) {
+        return 'abcdefgh'[f] + (8 - r);
+      }
+    }
+  }
+  return null;
+}
+
 function updateStatusAfterMove() {
   ui.renderHistory(chess.history());
   if (chess.isCheckmate()) {
-    const winner = chess.turn() === 'w' ? 'Black' : 'White';
+    const winnerColor = chess.turn() === 'w' ? 'b' : 'w';
+    const winner = winnerColor === 'w' ? 'White' : 'Black';
     ui.setStatus(`Checkmate — ${winner} wins.`);
     onGameEnded();
+    const kingSquare = findKingSquare(winnerColor);
+    if (kingSquare) {
+      const kingPos = squareToPosition(kingSquare);
+      kingPos.y = 0.9; // roughly crown height on the king model, not board level
+      cinematicCamera.playVictory(kingPos);
+    }
   } else if (chess.isStalemate()) {
     ui.setStatus('Stalemate — draw.');
     onGameEnded();
@@ -721,6 +744,24 @@ document.getElementById('puzzle-exit').addEventListener('click', () => {
 
 document.getElementById('menu-back').addEventListener('click', () => {
   showMenuView(menuHome);
+});
+
+// ── Board environment ──────────────────────────────────────────────
+// Chosen once on the menu rather than live-swapped mid-game — see
+// scene/themes.js. Changing it reloads the page since the scene, board,
+// and lighting are all built once from the saved theme at module load.
+
+const themeSelect = document.getElementById('menu-theme');
+THEMES.forEach((t) => {
+  const opt = document.createElement('option');
+  opt.value = t.id;
+  opt.textContent = t.name;
+  themeSelect.appendChild(opt);
+});
+themeSelect.value = activeTheme.id;
+themeSelect.addEventListener('change', () => {
+  setTheme(themeSelect.value);
+  window.location.reload();
 });
 
 let socket = null;

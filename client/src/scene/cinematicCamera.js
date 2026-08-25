@@ -60,4 +60,43 @@ export class CinematicCamera {
 
     requestAnimationFrame(step);
   }
+
+  // A single slow, dramatic dolly-in on the winning king at checkmate — no
+  // return phase, since the game is over and the player is free to orbit
+  // the final position once it lands.
+  playVictory(worldPos, onDone) {
+    if (this.active) { onDone?.(); return; }
+    this.active = true;
+    this.controls.enabled = false;
+
+    const startPos = this.camera.position.clone();
+    const startTarget = this.controls.target.clone();
+
+    const dir = new THREE.Vector3().subVectors(startPos, startTarget).normalize();
+    const closePos = worldPos.clone()
+      .add(dir.clone().multiplyScalar(3.4))
+      .add(new THREE.Vector3(0, 1.6, 0));
+
+    const duration = 1400;
+    const start = performance.now();
+
+    const step = (now) => {
+      const t = Math.min((now - start) / duration, 1);
+      const eased = 1 - Math.pow(1 - t, 3);
+
+      this.camera.position.lerpVectors(startPos, closePos, eased);
+      this.controls.target.lerpVectors(startTarget, worldPos, eased);
+      this.camera.lookAt(this.controls.target);
+
+      if (t >= 1) {
+        this.controls.enabled = true;
+        this.active = false;
+        onDone?.();
+        return;
+      }
+      requestAnimationFrame(step);
+    };
+
+    requestAnimationFrame(step);
+  }
 }

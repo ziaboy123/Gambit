@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { generateMarbleTexture, generateStoneTexture } from './textures.js';
+import { THEMES } from './themes.js';
 
 export const SQUARE_SIZE = 1;
 export const FILES = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
@@ -24,20 +25,20 @@ export function positionToSquare(x, z) {
 
 const VARIANT_COUNT = 3;
 
-export function buildBoard(scene) {
+export function buildBoard(scene, theme = THEMES[0]) {
   const boardGroup = new THREE.Group();
   boardGroup.name = 'board';
 
   const lightMats = Array.from({ length: VARIANT_COUNT }, (_, i) =>
     new THREE.MeshStandardMaterial({
-      map: generateMarbleTexture('#e6dabd', '#b89a5e', 100 + i, 512),
+      map: generateMarbleTexture(theme.board.light.base, theme.board.light.vein, 100 + i, 512),
       roughness: 0.42,
       metalness: 0.06,
     })
   );
   const darkMats = Array.from({ length: VARIANT_COUNT }, (_, i) =>
     new THREE.MeshStandardMaterial({
-      map: generateMarbleTexture('#332c22', '#5a4a30', 200 + i, 512),
+      map: generateMarbleTexture(theme.board.dark.base, theme.board.dark.vein, 200 + i, 512),
       roughness: 0.38,
       metalness: 0.06,
     })
@@ -63,9 +64,10 @@ export function buildBoard(scene) {
     }
   }
 
-  // Gold inlay ring between the tiles and the outer stone frame.
+  // Metal inlay ring between the tiles and the outer stone frame — gold,
+  // bronze, or moss-green depending on the theme.
   const inlayMat = new THREE.MeshPhysicalMaterial({
-    color: 0xc4953a, roughness: 0.3, metalness: 0.85,
+    color: theme.board.inlayColor, roughness: 0.3, metalness: 0.85,
     clearcoat: 0.3, clearcoatRoughness: 0.2,
   });
   const inlayShape = new THREE.Shape();
@@ -90,7 +92,7 @@ export function buildBoard(scene) {
   boardGroup.add(inlayMesh);
 
   // Stone frame/border around the inlay
-  const frameTex = generateStoneTexture('#2a251e', 42, 512);
+  const frameTex = generateStoneTexture(theme.board.frameColor, 42, 512);
   frameTex.repeat.set(2, 2);
   const frameMat = new THREE.MeshStandardMaterial({ map: frameTex, roughness: 0.92, metalness: 0.04 });
   const frameThickness = 0.5;
