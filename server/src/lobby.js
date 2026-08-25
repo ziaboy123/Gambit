@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import { Chess } from 'chess.js';
 import { resolveTimeControl } from './timeControls.js';
 
@@ -16,6 +17,10 @@ function freshClocks(timeControlKey) {
   return tc.baseMs == null ? null : { w: tc.baseMs, b: tc.baseMs };
 }
 
+function makePlayer(socketId, name) {
+  return { socketId, name, token: randomUUID(), connected: true };
+}
+
 export class LobbyStore {
   constructor() {
     this.lobbies = new Map(); // code -> lobby
@@ -26,6 +31,7 @@ export class LobbyStore {
     const code = generateCode(this.lobbies);
     const hostColor = Math.random() < 0.5 ? 'w' : 'b';
     const timeControlKey = timeControl || 'untimed';
+    const hostPlayer = makePlayer(hostSocketId, hostName);
     const lobby = {
       code,
       password: password || null,
@@ -33,19 +39,20 @@ export class LobbyStore {
       chess: new Chess(),
       status: 'waiting', // waiting -> active -> finished
       players: {
-        w: hostColor === 'w' ? { socketId: hostSocketId, name: hostName } : null,
-        b: hostColor === 'b' ? { socketId: hostSocketId, name: hostName } : null,
+        w: hostColor === 'w' ? hostPlayer : null,
+        b: hostColor === 'b' ? hostPlayer : null,
       },
       spectators: new Set(),
       createdAt: Date.now(),
       clocks: freshClocks(timeControlKey),
       lastMoveAt: null,
       flagTimer: null,
+      disconnectTimers: { w: null, b: null },
       rematchRequestedBy: null,
     };
     this.lobbies.set(code, lobby);
     this.socketToLobby.set(hostSocketId, code);
-    return { lobby, hostColor };
+    return { lobby, hostColor, token: hostPlayer.token };
   }
 
   join({ code, socketId, name, password }) {
@@ -55,11 +62,39 @@ export class LobbyStore {
     if (lobby.players.w && lobby.players.b) return { error: 'That lobby is already full.' };
 
     const joinColor = lobby.players.w ? 'b' : 'w';
-    lobby.players[joinColor] = { socketId, name };
+    const player = makePlayer(socketId, name);
+    lobby.players[joinColor] = player;
     lobby.status = 'active';
     lobby.lastMoveAt = Date.now();
     this.socketToLobby.set(socketId, code);
-    return { lobby, color: joinColor };
+    return { lobby, color: joinColor, token: player.token };
+  }
+
+  spectate({ code, socketId }) {
+    const lobby = this.lobbies.get(code);
+    if (!lobby) return { error: 'No lobby found with that code.' };
+    lobby.spectators.add(socketId);
+    this.socketToLobby.set(socketId, code);
+    return { lobby };
+  }
+
+  // Reattaches a dropped player to their seat using the token issued at
+  // create/join time (socket.id changes every reconnect, so it can't be
+  // used as the identity across a refresh or network blip).
+  reclaim({ code, token, socketId }) {
+    const lobby = this.lobbies.get(code);
+    if (!lobby) return { error: 'That game is no longer available.' };
+    const color = ['w', 'b'].find((c) => lobby.players[c]?.token === token);
+    if (!color) return { error: 'Could not reconnect to that game.' };
+
+    if (lobby.disconnectTimers[color]) {
+      clearTimeout(lobby.disconnectTimers[color]);
+      lobby.disconnectTimers[color] = null;
+    }
+    lobby.players[color].socketId = socketId;
+    lobby.players[color].connected = true;
+    this.socketToLobby.set(socketId, code);
+    return { lobby, color };
   }
 
   // Resets the board for a rematch, swapping who plays which color.
@@ -91,35 +126,47 @@ export class LobbyStore {
     return null;
   }
 
+  // Lists both open (still recruiting) and in-progress games — the client
+  // renders the former as "Join" rows and the latter as "Watch" rows.
   listPublic() {
     return Array.from(this.lobbies.values())
-      .filter((l) => l.status === 'waiting' && !(l.players.w && l.players.b))
+      .filter((l) => l.status !== 'finished')
       .map((l) => ({
         code: l.code,
         hasPassword: !!l.password,
         timeControl: l.timeControl,
         hostName: (l.players.w || l.players.b)?.name || 'Anonymous',
+        joinable: !(l.players.w && l.players.b),
+        players: { w: l.players.w?.name || null, b: l.players.b?.name || null },
+        spectators: l.spectators.size,
       }));
   }
 
-  removeSocket(socketId) {
-    const code = this.socketToLobby.get(socketId);
+  // A player's socket dropped. Mark their seat as disconnected but leave it
+  // reserved — the caller schedules a grace-period timer and, if it isn't
+  // cancelled by a reclaim() first, calls finalizeDisconnect() to actually
+  // free the seat.
+  markDisconnected(socketId) {
+    const lobby = this.getBySocket(socketId);
     this.socketToLobby.delete(socketId);
-    if (!code) return null;
-    const lobby = this.lobbies.get(code);
     if (!lobby) return null;
 
-    if (lobby.players.w?.socketId === socketId) lobby.players.w = null;
-    if (lobby.players.b?.socketId === socketId) lobby.players.b = null;
+    const color = this.colorOf(lobby, socketId);
+    if (color) {
+      lobby.players[color].connected = false;
+      return { lobby, color, isPlayer: true };
+    }
     lobby.spectators.delete(socketId);
+    return { lobby, color: null, isPlayer: false };
+  }
 
-    // Clean up empty lobbies immediately; leave one-player lobbies for a
-    // possible reconnect/rejoin rather than deleting them right away.
+  finalizeDisconnect(lobby, color) {
+    if (lobby.players[color]?.connected) return; // they reclaimed the seat already
+    lobby.players[color] = null;
+    lobby.disconnectTimers[color] = null;
     if (!lobby.players.w && !lobby.players.b && lobby.spectators.size === 0) {
       if (lobby.flagTimer) clearTimeout(lobby.flagTimer);
-      this.lobbies.delete(code);
-      return null;
+      this.lobbies.delete(lobby.code);
     }
-    return { code, lobby };
   }
 }

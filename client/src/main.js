@@ -22,14 +22,35 @@ let chess = new Chess();
 let selectedSquare = null;
 let inputLocked = true;
 let aiLevel = 'squire';
-let gameMode = 'ai'; // 'ai' | 'online'
+let gameMode = 'ai'; // 'ai' | 'online' | 'spectator'
 let myColor = 'w';
 let modelsReady = false;
 let onlineGameEnded = false;
 
+// ── Session persistence (survives a refresh or a dropped connection) ──
+
+const SESSION_KEY = 'gambit_session';
+
+function saveSession(code, token) {
+  sessionStorage.setItem(SESSION_KEY, JSON.stringify({ code, token }));
+}
+
+function loadSession() {
+  try {
+    const raw = sessionStorage.getItem(SESSION_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function clearSession() {
+  sessionStorage.removeItem(SESSION_KEY);
+}
+
 const ui = new UI({
   onNewGame: () => {
-    if (gameMode === 'online') return; // use "Request Rematch" in online games
+    if (gameMode !== 'ai') return; // online: use "Request Rematch"; spectator: nothing to reset
     chess = new Chess();
     selectedSquare = null;
     inputLocked = false;
@@ -122,6 +143,7 @@ function triggerAIMove() {
 // ── Board interaction ──────────────────────────────────────────────
 
 renderer.domElement.addEventListener('click', (event) => {
+  if (gameMode === 'spectator') return;
   if (inputLocked || onlineGameEnded || chess.isGameOver() || chess.turn() !== myColor) return;
 
   const square = picker.pickSquare(event);
@@ -222,6 +244,7 @@ function onGameEnded() {
   onlineGameEnded = true;
   inputLocked = true;
   if (gameMode === 'online') {
+    clearSession();
     resignBtn.classList.add('hidden');
     rematchBtn.classList.remove('hidden');
     rematchBtn.textContent = 'Request Rematch';
@@ -267,13 +290,20 @@ function waitForModels() {
   });
 }
 
-async function startGame({ mode, color, fen, clocks }) {
+async function startGame({ mode, color, state }) {
   await waitForModels();
   stopLobbyPolling();
   gameMode = mode;
   myColor = color;
   onlineGameEnded = false;
-  chess = fen ? new Chess(fen) : new Chess();
+
+  chess = new Chess();
+  if (state?.history?.length) {
+    for (const san of state.history) chess.move(san);
+  } else if (state?.fen) {
+    chess = new Chess(state.fen);
+  }
+
   selectedSquare = null;
   clearHighlights(markerMeshes);
   orientCameraForColor(camera, controls, defaultCameraPos, myColor);
@@ -281,21 +311,24 @@ async function startGame({ mode, color, fen, clocks }) {
   ui.renderHistory(chess.history());
   ui.setStatus('');
   ui.setTurn(chess.turn());
-  syncClocks(clocks || null);
+  syncClocks(state?.clocks || null);
 
   menuScreen.classList.add('hidden');
   uiRoot.classList.remove('hidden');
 
   const online = mode === 'online';
-  opponentInfo.classList.toggle('hidden', !online);
+  const spectating = mode === 'spectator';
+  opponentInfo.classList.toggle('hidden', mode === 'ai');
+  opponentInfo.textContent = spectating ? describeMatch(state) : describeOpponent(state);
   resignBtn.classList.toggle('hidden', !online);
-  document.getElementById('difficulty-select').classList.toggle('hidden', online);
+  document.getElementById('difficulty-select').classList.toggle('hidden', online || spectating);
+  document.getElementById('new-game').classList.toggle('hidden', spectating);
   rematchBtn.classList.add('hidden');
 
   if (mode === 'ai' && chess.turn() !== myColor) {
     triggerAIMove();
   } else {
-    inputLocked = chess.turn() !== myColor;
+    inputLocked = spectating || chess.turn() !== myColor;
   }
 }
 
@@ -324,8 +357,7 @@ function ensureSocket() {
 
 function setupSocketListeners() {
   socket.on('opponent-joined', ({ state }) => {
-    opponentInfo.textContent = describeOpponent(state);
-    startGame({ mode: 'online', color: myColor, fen: state.fen, clocks: state.clocks });
+    startGame({ mode: 'online', color: myColor, state });
   });
 
   socket.on('move-made', ({ move, fen, clocks }) => {
@@ -336,15 +368,26 @@ function setupSocketListeners() {
   });
 
   socket.on('game-over', ({ reason, winner }) => {
-    if (reason === 'timeout') {
+    if (reason === 'timeout' && gameMode !== 'spectator') {
       const won = winner === myColor;
       ui.setStatus(won ? 'Opponent ran out of time — you win.' : 'You ran out of time — you lose.');
     }
     onGameEnded();
   });
 
+  // A dropped connection doesn't end the game — the server holds the seat
+  // open for a reconnect window. Only `opponent-left` (grace period
+  // expired) actually ends it.
   socket.on('opponent-disconnected', () => {
-    ui.setStatus('Your opponent disconnected.');
+    if (gameMode === 'online') ui.setStatus('Opponent disconnected — waiting for them to reconnect…');
+  });
+
+  socket.on('opponent-reconnected', () => {
+    if (gameMode === 'online' && !onlineGameEnded) updateStatusAfterMove();
+  });
+
+  socket.on('opponent-left', () => {
+    ui.setStatus('Your opponent left the game.');
     onGameEnded();
   });
 
@@ -354,21 +397,28 @@ function setupSocketListeners() {
   });
 
   socket.on('rematch-requested', () => {
+    if (gameMode !== 'online') return;
     rematchBtn.classList.remove('hidden');
     rematchBtn.disabled = false;
     rematchBtn.textContent = 'Accept Rematch';
   });
 
   socket.on('rematch-started', ({ state }) => {
+    if (gameMode !== 'online') return;
     myColor = myColor === 'w' ? 'b' : 'w'; // server always swaps colors on rematch
-    startGame({ mode: 'online', color: myColor, fen: state.fen, clocks: state.clocks });
-    opponentInfo.textContent = describeOpponent(state);
+    startGame({ mode: 'online', color: myColor, state });
   });
 }
 
 function describeOpponent(state) {
   const opp = myColor === 'w' ? state.players.b : state.players.w;
   return opp ? `Playing against ${opp.name}` : '';
+}
+
+function describeMatch(state) {
+  const w = state.players.w?.name || 'White';
+  const b = state.players.b?.name || 'Black';
+  return `Watching: ${w} vs ${b}`;
 }
 
 function startLobbyPolling() {
@@ -395,22 +445,36 @@ function renderLobbyList(list) {
   }
   lobbyListEl.innerHTML = '';
   list.forEach((l) => {
+    const meta = l.joinable
+      ? `${l.code} · ${escapeHtml(l.timeControl)}`
+      : `${l.code} · ${escapeHtml(l.timeControl)} · ${l.spectators} watching`;
     const row = document.createElement('div');
     row.className = 'lobby-row';
     row.innerHTML = `
       <div class="lobby-row-info">
         <div class="lobby-row-host">${escapeHtml(l.hostName)}${l.hasPassword ? ' 🔒' : ''}</div>
-        <div class="lobby-row-meta">${l.code} · ${escapeHtml(l.timeControl)}</div>
+        <div class="lobby-row-meta">${meta}</div>
       </div>
-      <button class="lobby-row-join">Join</button>
+      <button class="lobby-row-join">${l.joinable ? 'Join' : 'Watch'}</button>
     `;
     row.querySelector('.lobby-row-join').addEventListener('click', () => {
-      document.getElementById('join-code').value = l.code;
-      if (l.hasPassword) document.getElementById('join-password').focus();
-      else document.getElementById('join-submit').click();
+      if (l.joinable) {
+        document.getElementById('join-code').value = l.code;
+        if (l.hasPassword) document.getElementById('join-password').focus();
+        else document.getElementById('join-submit').click();
+      } else {
+        spectateLobby(l.code);
+      }
     });
     lobbyListEl.appendChild(row);
   });
+}
+
+async function spectateLobby(code) {
+  ensureSocket();
+  const res = await emitAck('spectate-lobby', { code });
+  if (!res.ok) { onlineError.textContent = res.error || 'Could not watch that game.'; return; }
+  startGame({ mode: 'spectator', color: 'w', state: res.state });
 }
 
 function escapeHtml(str) {
@@ -430,6 +494,7 @@ document.getElementById('host-create').addEventListener('click', async () => {
   if (!res.ok) { onlineError.textContent = res.error || 'Could not create lobby.'; return; }
 
   myColor = res.color;
+  saveSession(res.code, res.token);
   document.getElementById('lobby-code-display').textContent = res.code;
   document.getElementById('lobby-status').textContent = 'Waiting for an opponent to join…';
   showMenuView(menuWaiting);
@@ -446,15 +511,31 @@ document.getElementById('join-submit').addEventListener('click', async () => {
   const res = await emitAck('join-lobby', { code, name, password });
   if (!res.ok) { onlineError.textContent = res.error || 'Could not join lobby.'; return; }
 
-  opponentInfo.textContent = describeOpponent(res.state);
-  startGame({ mode: 'online', color: res.color, fen: res.state.fen, clocks: res.state.clocks });
+  saveSession(res.code, res.token);
+  startGame({ mode: 'online', color: res.color, state: res.state });
 });
 
 document.getElementById('lobby-cancel').addEventListener('click', () => {
   if (socket) socket.disconnect();
   socket = null;
+  clearSession();
   showMenuView(menuOnline);
 });
+
+// Reattaches to a game already in progress after a refresh or a dropped
+// connection, using the token saved at create/join time. Runs once at
+// startup, before the menu is meaningfully interactive.
+async function tryRejoin() {
+  const session = loadSession();
+  if (!session) return;
+
+  ensureSocket();
+  const res = await emitAck('rejoin-lobby', { code: session.code, token: session.token });
+  if (!res.ok) { clearSession(); return; }
+
+  startGame({ mode: 'online', color: res.color, state: res.state });
+}
+tryRejoin();
 
 // ── Debug hook ──────────────────────────────────────────────────────
 

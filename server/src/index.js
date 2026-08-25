@@ -5,6 +5,7 @@ import { LobbyStore } from './lobby.js';
 import { resolveTimeControl } from './timeControls.js';
 
 const PORT = process.env.PORT || 3004;
+const RECONNECT_GRACE_MS = 30000;
 
 const app = express();
 const httpServer = createServer(app);
@@ -20,13 +21,14 @@ function publicState(lobby) {
   return {
     code: lobby.code,
     fen: lobby.chess.fen(),
+    history: lobby.chess.history(),
     timeControl: lobby.timeControl,
     clocks: lobby.clocks,
     hasPassword: !!lobby.password,
     status: lobby.status,
     players: {
-      w: lobby.players.w ? { name: lobby.players.w.name } : null,
-      b: lobby.players.b ? { name: lobby.players.b.name } : null,
+      w: lobby.players.w ? { name: lobby.players.w.name, connected: lobby.players.w.connected } : null,
+      b: lobby.players.b ? { name: lobby.players.b.name, connected: lobby.players.b.connected } : null,
     },
   };
 }
@@ -50,25 +52,40 @@ function finishByTimeout(lobby, loserColor) {
 
 io.on('connection', (socket) => {
   socket.on('create-lobby', ({ name, password, timeControl } = {}, ack) => {
-    const { lobby, hostColor } = store.create({
+    const { lobby, hostColor, token } = store.create({
       hostSocketId: socket.id,
       hostName: name || 'Host',
       password,
       timeControl,
     });
     socket.join(lobby.code);
-    ack?.({ ok: true, code: lobby.code, color: hostColor, state: publicState(lobby) });
+    ack?.({ ok: true, code: lobby.code, color: hostColor, token, state: publicState(lobby) });
   });
 
   socket.on('join-lobby', ({ code, name, password } = {}, ack) => {
     const result = store.join({ code: (code || '').toUpperCase(), socketId: socket.id, name: name || 'Guest', password });
     if (result.error) { ack?.({ ok: false, error: result.error }); return; }
 
-    const { lobby, color } = result;
+    const { lobby, color, token } = result;
     socket.join(lobby.code);
     scheduleFlagTimer(lobby);
-    ack?.({ ok: true, code: lobby.code, color, state: publicState(lobby) });
+    ack?.({ ok: true, code: lobby.code, color, token, state: publicState(lobby) });
     socket.to(lobby.code).emit('opponent-joined', { state: publicState(lobby) });
+  });
+
+  socket.on('spectate-lobby', ({ code } = {}, ack) => {
+    const result = store.spectate({ code: (code || '').toUpperCase(), socketId: socket.id });
+    if (result.error) { ack?.({ ok: false, error: result.error }); return; }
+    socket.join(result.lobby.code);
+    ack?.({ ok: true, state: publicState(result.lobby) });
+  });
+
+  socket.on('rejoin-lobby', ({ code, token } = {}, ack) => {
+    const result = store.reclaim({ code: (code || '').toUpperCase(), token, socketId: socket.id });
+    if (result.error) { ack?.({ ok: false, error: result.error }); return; }
+    socket.join(result.lobby.code);
+    ack?.({ ok: true, color: result.color, state: publicState(result.lobby) });
+    socket.to(result.lobby.code).emit('opponent-reconnected', { color: result.color });
   });
 
   socket.on('list-lobbies', (_payload, ack) => {
@@ -152,13 +169,22 @@ io.on('connection', (socket) => {
     ack?.({ ok: true });
   });
 
+  // A dropped connection doesn't end the game or pause the clock (that
+  // would let a player "pause" by disconnecting when low on time) — it
+  // just starts a grace period during which their seat stays reserved for
+  // rejoin-lobby to reclaim. If the grace period lapses without a reclaim,
+  // the seat is freed and the opponent is told the player left for good.
   socket.on('disconnect', () => {
-    const removed = store.removeSocket(socket.id);
-    if (removed) {
-      if (removed.lobby.flagTimer) clearTimeout(removed.lobby.flagTimer);
-      removed.lobby.flagTimer = null;
-      socket.to(removed.code).emit('opponent-disconnected');
-    }
+    const result = store.markDisconnected(socket.id);
+    if (!result || !result.isPlayer) return;
+
+    const { lobby, color } = result;
+    socket.to(lobby.code).emit('opponent-disconnected', { color });
+
+    lobby.disconnectTimers[color] = setTimeout(() => {
+      store.finalizeDisconnect(lobby, color);
+      io.to(lobby.code).emit('opponent-left', { color });
+    }, RECONNECT_GRACE_MS);
   });
 });
 
