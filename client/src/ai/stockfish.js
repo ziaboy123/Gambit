@@ -60,3 +60,48 @@ export async function getBestMove(fen, { skillLevel = 12, moveTimeMs = 900 } = {
     w.postMessage(`go movetime ${moveTimeMs}`);
   });
 }
+
+// Full-strength evaluation for post-game analysis — deliberately resets
+// Skill Level to max each call so a prior capped-strength game against
+// "Lord Commander" can't leave the engine artificially weak for analysis.
+// Returns the engine's top move and a score from the side-to-move's own
+// perspective (positive = good for whoever is to move in `fen`).
+export async function evaluatePosition(fen, { depth = 14 } = {}) {
+  await waitUntilReady();
+  const w = ensureWorker();
+
+  w.postMessage('setoption name Skill Level value 20');
+  w.postMessage(`position fen ${fen}`);
+
+  return new Promise((resolve) => {
+    let score = { cp: 0, mate: null };
+    const handler = (e) => {
+      const line = e.data;
+      if (typeof line !== 'string') return;
+      if (line.startsWith('info') && line.includes(' score ')) {
+        const cpMatch = line.match(/score cp (-?\d+)/);
+        const mateMatch = line.match(/score mate (-?\d+)/);
+        if (mateMatch) score = { cp: null, mate: parseInt(mateMatch[1], 10) };
+        else if (cpMatch) score = { cp: parseInt(cpMatch[1], 10), mate: null };
+      }
+      if (line.startsWith('bestmove')) {
+        w.removeEventListener('message', handler);
+        const uci = line.split(' ')[1];
+        resolve({ bestMove: uci === '(none)' ? null : parseUciMove(uci), score });
+      }
+    };
+    w.addEventListener('message', handler);
+    w.postMessage(`go depth ${depth}`);
+  });
+}
+
+// Converts a score (cp or forced mate, from the side-to-move's own
+// perspective) into a single signed centipawn number from White's
+// perspective, so evaluations across a whole game can be compared
+// directly regardless of whose turn each position was.
+export function scoreToWhiteCp(score, sideToMove) {
+  const raw = score.mate !== null
+    ? Math.sign(score.mate) * (100000 - Math.abs(score.mate) * 100)
+    : score.cp;
+  return sideToMove === 'w' ? raw : -raw;
+}

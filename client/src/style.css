@@ -555,3 +555,26 @@ html, body {
   gap: 10px;
   margin-left: auto;
 }
+
+/* ── MOVE ANALYSIS ── */
+#move-list .move-pair {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.move-quality {
+  font-size: 0.68rem;
+  letter-spacing: 0.04em;
+  padding: 1px 6px;
+  border-radius: 2px;
+  font-weight: 600;
+}
+
+.quality-best        { color: #7fc4e0; background: rgba(127,196,224,0.14); }
+.quality-excellent    { color: #6ea86e; background: rgba(110,168,110,0.14); }
+.quality-good          { color: var(--text-muted); background: rgba(138,130,120,0.1); }
+.quality-inaccuracy   { color: #d0a850; background: rgba(208,168,80,0.14); }
+.quality-mistake       { color: #d08850; background: rgba(208,136,80,0.16); }
+.quality-blunder        { color: #e05555; background: rgba(224,85,85,0.16); }

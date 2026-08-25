@@ -11,6 +11,16 @@ export function connectSocket() {
   return socket;
 }
 
+// A manual .disconnect() does not auto-reconnect — leaving the module's
+// cached instance in place after one would make every future
+// connectSocket() call return that same dead connection. Callers that
+// deliberately disconnect (leaving a lobby, logging out) must go through
+// this so the next connectSocket() actually opens a fresh one.
+export function disconnectSocket() {
+  if (socket) socket.disconnect();
+  socket = null;
+}
+
 export function getSocket() {
   return socket;
 }

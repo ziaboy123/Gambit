@@ -7,8 +7,9 @@ import { PieceManager } from './scene/pieceManager.js';
 import { CinematicCamera } from './scene/cinematicCamera.js';
 import { Picker } from './interaction/picker.js';
 import { requestAIMove } from './ai/ai.js';
+import { analyzeGame } from './ai/analysis.js';
 import { UI } from './ui/ui.js';
-import { connectSocket, emitAck } from './network/socket.js';
+import { connectSocket, disconnectSocket, emitAck } from './network/socket.js';
 import { register, login, clearToken, fetchMe, fetchLeaderboard, fetchHistory, fetchGame } from './network/auth.js';
 
 const canvas = document.getElementById('canvas');
@@ -482,6 +483,10 @@ async function startGame({ mode, color, state }) {
 
 let replayMoves = [];
 let replayIndex = 0;
+let gameAnalysis = null; // array from analyzeGame(), or null if not analyzed yet
+
+const analysisStatusEl = document.getElementById('analysis-status');
+const analyzeBtn = document.getElementById('replay-analyze');
 
 async function openReplay(gameId) {
   const res = await fetchGame(gameId);
@@ -496,6 +501,10 @@ async function openReplay(gameId) {
   inputLocked = true;
   replayMoves = game.moves;
   replayIndex = replayMoves.length;
+  gameAnalysis = null;
+  analysisStatusEl.classList.add('hidden');
+  analyzeBtn.disabled = false;
+  analyzeBtn.textContent = 'Analyze';
 
   orientCameraForColor(camera, controls, defaultCameraPos, 'w');
   syncClocks(null);
@@ -518,13 +527,58 @@ function renderReplayPosition() {
   for (let i = 0; i < replayIndex; i++) chess.move(replayMoves[i]);
   pieceManager.buildFromBoard(chess);
   clearHighlights(markerMeshes);
-  ui.renderHistory(chess.history());
+  renderMoveList();
   ui.setTurn(chess.turn());
   ui.setStatus('');
   document.getElementById('replay-position').textContent = `${replayIndex} / ${replayMoves.length}`;
   document.getElementById('replay-prev').disabled = replayIndex === 0;
   document.getElementById('replay-next').disabled = replayIndex === replayMoves.length;
 }
+
+// Plain move list normally; once `gameAnalysis` is populated, each move
+// gets a quality badge (Best/Good/Blunder/etc) instead.
+function renderMoveList() {
+  if (!gameAnalysis) { ui.renderHistory(chess.history()); return; }
+
+  const moveListEl = document.getElementById('move-list');
+  moveListEl.innerHTML = '';
+  for (let i = 0; i < replayMoves.length; i += 2) {
+    const li = document.createElement('li');
+    const pair = document.createElement('div');
+    pair.className = 'move-pair';
+    pair.appendChild(moveBadge(replayMoves[i], gameAnalysis[i]));
+    if (replayMoves[i + 1]) pair.appendChild(moveBadge(replayMoves[i + 1], gameAnalysis[i + 1]));
+    li.appendChild(pair);
+    moveListEl.appendChild(li);
+  }
+}
+
+function moveBadge(san, analysis) {
+  const wrap = document.createElement('span');
+  wrap.textContent = san + ' ';
+  if (analysis && analysis.label !== 'Good') {
+    const badge = document.createElement('span');
+    badge.className = `move-quality quality-${analysis.className}`;
+    badge.textContent = analysis.label;
+    wrap.appendChild(badge);
+  }
+  return wrap;
+}
+
+analyzeBtn.addEventListener('click', async () => {
+  analyzeBtn.disabled = true;
+  analysisStatusEl.classList.remove('hidden');
+  analysisStatusEl.textContent = `Analyzing… 0 / ${replayMoves.length}`;
+
+  gameAnalysis = await analyzeGame(replayMoves, {
+    onProgress: (done, total) => { analysisStatusEl.textContent = `Analyzing… ${done} / ${total}`; },
+  });
+
+  analysisStatusEl.textContent = 'Analysis complete.';
+  analyzeBtn.textContent = 'Re-analyze';
+  analyzeBtn.disabled = false;
+  renderMoveList();
+});
 
 document.getElementById('replay-prev').addEventListener('click', () => {
   if (replayIndex > 0) { replayIndex--; renderReplayPosition(); }
@@ -736,7 +790,7 @@ document.getElementById('join-submit').addEventListener('click', async () => {
 });
 
 document.getElementById('lobby-cancel').addEventListener('click', () => {
-  if (socket) socket.disconnect();
+  disconnectSocket();
   socket = null;
   clearSession();
   showMenuView(menuOnline);
