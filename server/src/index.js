@@ -1,6 +1,8 @@
 import express from 'express';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { LobbyStore } from './lobby.js';
 import { resolveTimeControl } from './timeControls.js';
 import { createToken, verifyToken } from './auth.js';
@@ -346,6 +348,17 @@ io.on('connection', (socket) => {
       store.finalizeDisconnect(lobby, color);
     }, RECONNECT_GRACE_MS);
   });
+});
+
+// Serves the built client (client/dist) and falls back to its index.html
+// for any other GET, so the SPA loads on a fresh page navigation. In
+// production this sits behind an nginx location that strips the /gambit
+// prefix before proxying here, so paths below are root-relative.
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const clientDist = path.join(__dirname, '../../client/dist');
+app.use(express.static(clientDist));
+app.get(/^(?!\/api|\/socket\.io|\/health).*/, (_req, res) => {
+  res.sendFile(path.join(clientDist, 'index.html'));
 });
 
 httpServer.listen(PORT, () => console.log(`Gambit server running on :${PORT}`));

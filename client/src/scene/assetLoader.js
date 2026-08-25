@@ -17,7 +17,7 @@ const cache = {};
 export async function loadPieceModels() {
   const entries = Object.entries(MODEL_FILES);
   await Promise.all(entries.map(async ([type, file]) => {
-    const gltf = await loader.loadAsync(`/models/${file}`);
+    const gltf = await loader.loadAsync(`${import.meta.env.BASE_URL}models/${file}`);
     normalizeMaterials(gltf.scene);
     cache[type] = gltf;
   }));

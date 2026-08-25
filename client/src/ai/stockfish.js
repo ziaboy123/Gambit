@@ -8,7 +8,7 @@ let readyPromise = null;
 
 function ensureWorker() {
   if (worker) return worker;
-  worker = new Worker('/stockfish/stockfish.js');
+  worker = new Worker(`${import.meta.env.BASE_URL}stockfish/stockfish.js`);
   return worker;
 }
 
