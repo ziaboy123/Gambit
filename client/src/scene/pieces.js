@@ -23,8 +23,13 @@ const FACTION_TINT = {
 // locked root every frame (see pieceManager.tick) instead of just set once.
 const FACE_ROTATION_Y = { w: Math.PI, b: 0 };
 
+// Matches the active board theme's inlay color (gold/bronze/moss) so the
+// king and queen's crowns read as part of the same set, not a fixed prop.
+let trimColor = 0xc4953a;
+export function setTrimColor(hex) { trimColor = hex; }
+
 const GOLD_TRIM = () => new THREE.MeshPhysicalMaterial({
-  color: 0xc4953a, roughness: 0.22, metalness: 0.9,
+  color: trimColor, roughness: 0.22, metalness: 0.9,
   clearcoat: 0.4, clearcoatRoughness: 0.15,
 });
 

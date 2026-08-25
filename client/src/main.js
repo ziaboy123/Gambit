@@ -13,8 +13,10 @@ import { connectSocket, disconnectSocket, emitAck } from './network/socket.js';
 import { register, login, clearToken, fetchMe, fetchLeaderboard, fetchHistory, fetchGame } from './network/auth.js';
 import { fetchDailyPuzzle, submitPuzzleAttempt } from './network/puzzle.js';
 import { THEMES, getTheme, setTheme } from './scene/themes.js';
+import { setTrimColor } from './scene/pieces.js';
 
 const activeTheme = getTheme();
+setTrimColor(activeTheme.board.inlayColor);
 const canvas = document.getElementById('canvas');
 const { scene, camera, renderer, controls, composer, defaultCameraPos } = setupScene(canvas, activeTheme);
 const { tileMeshes, markerMeshes } = buildBoard(scene, activeTheme);
