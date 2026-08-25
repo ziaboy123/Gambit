@@ -1,5 +1,8 @@
-// Three AI tiers. "Lord Commander" is a deeper local search for now —
-// swapping in Stockfish WASM later is a drop-in replacement for `chooseMove`.
+// Three AI tiers: Squire (random) and Knight (shallow local search) are
+// synchronous; Lord Commander runs real Stockfish in a Web Worker, so its
+// chooseMove returns a Promise instead of a move directly.
+
+import { getBestMove as stockfishBestMove } from './stockfish.js';
 
 const PIECE_VALUES = { p: 100, n: 320, b: 330, r: 500, q: 900, k: 0 };
 
@@ -58,15 +61,21 @@ function searchBestMove(chess, depth) {
 export const AI_LEVELS = {
   squire: { label: 'Squire', chooseMove: (chess) => randomMove(chess) },
   knight: { label: 'Knight', chooseMove: (chess) => searchBestMove(chess, 2) },
-  lord: { label: 'Lord Commander', chooseMove: (chess) => searchBestMove(chess, 3) },
+  // Skill Level 10 of Stockfish's 0-20 dial — meaningfully strong (real
+  // engine tactics, not a local heuristic) but still beatable, rather than
+  // the wall a full-strength engine would be.
+  lord: { label: 'Lord Commander', chooseMove: (chess) => stockfishBestMove(chess.fen(), { skillLevel: 10, moveTimeMs: 900 }) },
 };
 
 // Runs the search on a short timeout so the UI can show a "thinking" state
-// without blocking — deeper levels can take a noticeable moment.
+// without blocking — deeper levels can take a noticeable moment. Squire and
+// Knight resolve `chooseMove` synchronously; Lord Commander's Stockfish
+// worker resolves it as a Promise — awaiting a plain value is a no-op, so
+// this handles both without needing to know which.
 export function requestAIMove(chess, level, callback) {
   const ai = AI_LEVELS[level] || AI_LEVELS.squire;
-  setTimeout(() => {
-    const move = ai.chooseMove(chess);
+  setTimeout(async () => {
+    const move = await ai.chooseMove(chess);
     callback(move);
   }, 260);
 }

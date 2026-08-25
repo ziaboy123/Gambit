@@ -464,7 +464,7 @@ async function startGame({ mode, color, state }) {
   const online = mode === 'online';
   const spectating = mode === 'spectator';
   opponentInfo.classList.toggle('hidden', mode === 'ai');
-  opponentInfo.textContent = spectating ? describeMatch(state) : describeOpponent(state);
+  if (mode !== 'ai') opponentInfo.textContent = spectating ? describeMatch(state) : describeOpponent(state);
   resignBtn.classList.toggle('hidden', !online);
   document.getElementById('difficulty-select').classList.toggle('hidden', online || spectating);
   document.getElementById('new-game').classList.toggle('hidden', spectating);
