@@ -11,6 +11,7 @@ import { analyzeGame } from './ai/analysis.js';
 import { UI } from './ui/ui.js';
 import { connectSocket, disconnectSocket, emitAck } from './network/socket.js';
 import { register, login, clearToken, fetchMe, fetchLeaderboard, fetchHistory, fetchGame } from './network/auth.js';
+import { fetchDailyPuzzle, submitPuzzleAttempt } from './network/puzzle.js';
 
 const canvas = document.getElementById('canvas');
 const { scene, camera, renderer, controls, composer, defaultCameraPos } = setupScene(canvas);
@@ -24,10 +25,12 @@ let chess = new Chess();
 let selectedSquare = null;
 let inputLocked = true;
 let aiLevel = 'squire';
-let gameMode = 'ai'; // 'ai' | 'online' | 'spectator'
+let gameMode = 'ai'; // 'ai' | 'online' | 'spectator' | 'replay' | 'puzzle'
 let myColor = 'w';
 let modelsReady = false;
 let onlineGameEnded = false;
+let puzzleState = null; // { id, movesSoFar: [uci,...] } while gameMode === 'puzzle'
+let pendingPuzzleAdvance = null; // set right before a puzzle move animates, consumed once it lands
 
 // ── Session persistence (survives a refresh or a dropped connection) ──
 
@@ -107,6 +110,12 @@ function playMove(moveObj, { isRemote = false } = {}) {
   let cameraDone = true;
   const tryUnlock = () => {
     if (!pieceDone || !cameraDone) return;
+    if (gameMode === 'puzzle' && pendingPuzzleAdvance) {
+      const advance = pendingPuzzleAdvance;
+      pendingPuzzleAdvance = null;
+      advance();
+      return;
+    }
     if (chess.isGameOver() || onlineGameEnded) return;
     if (chess.turn() === myColor) {
       inputLocked = false;
@@ -179,7 +188,11 @@ renderer.domElement.addEventListener('click', (event) => {
     selectedSquare = null;
     let promotion;
     if (target.piece === 'p' && (square[1] === '8' || square[1] === '1')) promotion = 'q';
-    playMove({ from: target.from, to: target.to, promotion });
+    if (gameMode === 'puzzle') {
+      attemptPuzzleMove(target.from, target.to, promotion);
+    } else {
+      playMove({ from: target.from, to: target.to, promotion });
+    }
     return;
   }
 
@@ -470,6 +483,7 @@ async function startGame({ mode, color, state }) {
   document.getElementById('difficulty-select').classList.toggle('hidden', online || spectating);
   document.getElementById('new-game').classList.toggle('hidden', spectating);
   document.getElementById('replay-controls').classList.add('hidden');
+  document.getElementById('puzzle-exit').classList.add('hidden');
   rematchBtn.classList.add('hidden');
 
   if (mode === 'ai' && chess.turn() !== myColor) {
@@ -517,6 +531,7 @@ async function openReplay(gameId) {
   document.getElementById('difficulty-select').classList.add('hidden');
   document.getElementById('new-game').classList.add('hidden');
   rematchBtn.classList.add('hidden');
+  document.getElementById('puzzle-exit').classList.add('hidden');
   document.getElementById('replay-controls').classList.remove('hidden');
 
   renderReplayPosition();
@@ -601,6 +616,107 @@ document.getElementById('menu-play-ai').addEventListener('click', () => {
 document.getElementById('menu-play-online').addEventListener('click', () => {
   showMenuView(menuOnline);
   ensureSocket();
+});
+
+// ── Daily puzzle ────────────────────────────────────────────────────
+// A single-player scripted position: the server holds the solution and
+// only ever reveals the next opponent reply one ply at a time, after the
+// solver has submitted a correct move for the ply before it — so a wrong
+// guess never leaks the answer.
+
+function puzzleObjectiveText(puzzle) {
+  const side = myColor === 'w' ? 'White' : 'Black';
+  const already = puzzle.solved ? ' (solved today)' : '';
+  return `Daily Puzzle — ${puzzle.theme} — ${side} to move${already}`;
+}
+
+async function startPuzzle() {
+  const res = await fetchDailyPuzzle();
+  if (!res.ok) return;
+  const puzzle = res.data;
+
+  await waitForModels();
+  stopLobbyPolling();
+  gameMode = 'puzzle';
+  onlineGameEnded = false;
+
+  chess = new Chess(puzzle.fen);
+  myColor = chess.turn();
+  puzzleState = { id: puzzle.id, movesSoFar: [] };
+  pendingPuzzleAdvance = null;
+
+  selectedSquare = null;
+  clearHighlights(markerMeshes);
+  orientCameraForColor(camera, controls, defaultCameraPos, myColor);
+  pieceManager.buildFromBoard(chess);
+  ui.renderHistory([]);
+  ui.setStatus('');
+  ui.setTurn(chess.turn());
+  syncClocks(null);
+
+  menuScreen.classList.add('hidden');
+  uiRoot.classList.remove('hidden');
+
+  opponentInfo.classList.remove('hidden');
+  opponentInfo.textContent = puzzleObjectiveText(puzzle);
+  resignBtn.classList.add('hidden');
+  document.getElementById('difficulty-select').classList.add('hidden');
+  document.getElementById('new-game').classList.add('hidden');
+  document.getElementById('replay-controls').classList.add('hidden');
+  rematchBtn.classList.add('hidden');
+  document.getElementById('puzzle-exit').classList.remove('hidden');
+
+  inputLocked = false;
+}
+
+async function attemptPuzzleMove(from, to, promotion) {
+  if (!puzzleState) return;
+  inputLocked = true;
+
+  const uci = from + to + (promotion || '');
+  const attempt = [...puzzleState.movesSoFar, uci];
+  const res = await submitPuzzleAttempt(puzzleState.id, attempt);
+
+  if (!res.ok || !res.data.correct) {
+    ui.setStatus('Not quite — try again.');
+    inputLocked = false;
+    return;
+  }
+
+  puzzleState.movesSoFar = attempt;
+  const { done, opponentMove } = res.data;
+
+  pendingPuzzleAdvance = () => {
+    if (done) {
+      ui.setStatus('Puzzle solved!');
+      inputLocked = true;
+      return;
+    }
+    ui.setStatus('Correct — opponent replies…');
+    setTimeout(() => {
+      puzzleState.movesSoFar = [...puzzleState.movesSoFar, opponentMove];
+      playMove({
+        from: opponentMove.slice(0, 2),
+        to: opponentMove.slice(2, 4),
+        promotion: opponentMove.length > 4 ? opponentMove[4] : undefined,
+      });
+    }, 500);
+  };
+
+  playMove({ from, to, promotion });
+}
+
+document.getElementById('menu-play-puzzle').addEventListener('click', () => {
+  startPuzzle();
+});
+
+document.getElementById('puzzle-exit').addEventListener('click', () => {
+  puzzleState = null;
+  pendingPuzzleAdvance = null;
+  document.getElementById('puzzle-exit').classList.add('hidden');
+  uiRoot.classList.add('hidden');
+  menuScreen.classList.remove('hidden');
+  showMenuView(menuHome);
 });
 
 document.getElementById('menu-back').addEventListener('click', () => {
@@ -816,6 +932,7 @@ tryRejoin();
 window.__gambit = {
   getFen: () => chess.fen(),
   getHistory: () => chess.history(),
+  attemptPuzzleMove,
   isGameOver: () => chess.isGameOver(),
   turn: () => chess.turn(),
   playMove,

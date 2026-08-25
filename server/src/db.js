@@ -51,4 +51,12 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_games_white ON games(white_user_id);
   CREATE INDEX IF NOT EXISTS idx_games_black ON games(black_user_id);
   CREATE INDEX IF NOT EXISTS idx_ratings_tc ON ratings(time_control, elo);
+
+  CREATE TABLE IF NOT EXISTS puzzle_solves (
+    user_id INTEGER NOT NULL,
+    puzzle_id TEXT NOT NULL,
+    solved_at INTEGER NOT NULL,
+    PRIMARY KEY (user_id, puzzle_id),
+    FOREIGN KEY (user_id) REFERENCES users(id)
+  );
 `);

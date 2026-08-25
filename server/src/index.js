@@ -8,6 +8,8 @@ import {
   registerUser, authenticateUser, getUserById, getRatings,
   getLeaderboard, getHistory, getGame, recordGame,
 } from './accounts.js';
+import { puzzleForDate, getPuzzle, todayString } from './puzzles.js';
+import { hasSolved, recordSolve } from './puzzleSolves.js';
 
 const PORT = process.env.PORT || 3004;
 const RECONNECT_GRACE_MS = 30000;
@@ -54,6 +56,16 @@ function requireAuth(req, res, next) {
   next();
 }
 
+// Like requireAuth, but for routes guests can also use — attaches req.userId
+// when a valid token is present instead of rejecting when it's absent.
+function softAuth(req, _res, next) {
+  const header = req.headers.authorization || '';
+  const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+  const payload = verifyToken(token);
+  if (payload) req.userId = payload.id;
+  next();
+}
+
 app.get('/api/me', requireAuth, (req, res) => {
   const user = getUserById(req.userId);
   if (!user) return res.status(404).json({ error: 'User not found.' });
@@ -74,6 +86,40 @@ app.get('/api/game/:id', (req, res) => {
   const game = getGame(Number(req.params.id));
   if (!game) return res.status(404).json({ error: 'Game not found.' });
   res.json(game);
+});
+
+// ── Daily puzzle (REST) ──────────────────────────────────────────────
+// The solution never leaves the server — the client only ever learns the
+// next opponent move one ply at a time, after it has submitted a correct
+// attempt for the ply before it.
+
+app.get('/api/puzzle/daily', softAuth, (req, res) => {
+  const date = todayString();
+  const puzzle = puzzleForDate(date);
+  res.json({
+    id: puzzle.id,
+    fen: puzzle.fen,
+    theme: puzzle.theme,
+    rating: puzzle.rating,
+    date,
+    solved: hasSolved(req.userId, puzzle.id),
+  });
+});
+
+app.post('/api/puzzle/attempt', softAuth, (req, res) => {
+  const { puzzleId, moves } = req.body || {};
+  const puzzle = getPuzzle(puzzleId);
+  if (!puzzle) return res.status(404).json({ error: 'Unknown puzzle.' });
+  if (!Array.isArray(moves) || moves.length === 0 || moves.length > puzzle.solution.length) {
+    return res.status(400).json({ error: 'Invalid attempt.' });
+  }
+
+  const correct = moves.every((m, i) => m === puzzle.solution[i]);
+  if (!correct) return res.json({ correct: false });
+
+  const done = moves.length === puzzle.solution.length;
+  if (done && req.userId) recordSolve(req.userId, puzzle.id);
+  res.json({ correct: true, done, opponentMove: done ? null : puzzle.solution[moves.length] });
 });
 
 // ── Realtime game ────────────────────────────────────────────────────
