@@ -300,7 +300,12 @@ resignBtn.addEventListener('click', async () => {
 rematchBtn.addEventListener('click', async () => {
   rematchBtn.disabled = true;
   rematchBtn.textContent = 'Waiting for opponent…';
-  await emitAck('request-rematch', {});
+  const res = await emitAck('request-rematch', {});
+  // server said no (usually the opponent's gone), so don't sit there waiting forever
+  if (res && !res.ok) {
+    rematchBtn.classList.add('hidden');
+    ui.setStatus(res.error || 'Rematch not available.');
+  }
 });
 
 // ── Menu / game start ──────────────────────────────────────────────

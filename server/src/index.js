@@ -4,7 +4,7 @@ import { Server } from 'socket.io';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { LobbyStore } from './lobby.js';
-import { resolveTimeControl } from './timeControls.js';
+import { TIME_CONTROLS, resolveTimeControl } from './timeControls.js';
 import { createToken, verifyToken } from './auth.js';
 import {
   registerUser, authenticateUser, getUserById, getRatings,
@@ -12,6 +12,7 @@ import {
 } from './accounts.js';
 import { puzzleForDate, getPuzzle, todayString } from './puzzles.js';
 import { hasSolved, recordSolve } from './puzzleSolves.js';
+import { safeOn } from './safeSocket.js';
 
 const PORT = process.env.PORT || 3004;
 const RECONNECT_GRACE_MS = 30000;
@@ -128,11 +129,34 @@ app.post('/api/puzzle/attempt', softAuth, (req, res) => {
 
 const store = new LobbyStore();
 
+// Socket payloads come straight from the client, so check the fields before
+// using them. The length limits match the client's maxlength on the inputs,
+// so a real player never hits them.
+const NAME_MAX = 20;
+const PASSWORD_MAX = 20;
+const SQUARE_RE = /^[a-h][1-8]$/;
+const PROMOTION_PIECES = ['q', 'r', 'b', 'n'];
+
+// Names and passwords are optional, but if they're there they have to be
+// a string that fits.
+function isOptionalText(value, max) {
+  return value == null || (typeof value === 'string' && value.length <= max);
+}
+
+// Lobby codes are 6 characters, so anything that isn't a short string
+// can't match a lobby. Returns null for those instead of throwing on .toUpperCase().
+function parseCode(code) {
+  return typeof code === 'string' && code.length <= 6 ? code.toUpperCase() : null;
+}
+
+const isSquare = (value) => typeof value === 'string' && SQUARE_RE.test(value);
+const isTimeControl = (value) => typeof value === 'string' && Object.hasOwn(TIME_CONTROLS, value);
+
 function publicState(lobby) {
   return {
     code: lobby.code,
     fen: lobby.chess.fen(),
-    history: lobby.chess.history(),
+    history: lobby.moves.slice(), // not chess.history(), see lobby.moves
     timeControl: lobby.timeControl,
     clocks: lobby.clocks,
     hasPassword: !!lobby.password,
@@ -180,7 +204,7 @@ function finishGame(lobby, { result, winner }) {
     timeControl: lobby.timeControl,
     result,
     winner: winner ?? null,
-    moves: lobby.chess.history(),
+    moves: lobby.moves,
   });
 
   io.to(lobby.code).emit('game-over', { result, winner: winner ?? null, ratings: record });
@@ -200,74 +224,107 @@ function joinLobbyRoom(socket, code) {
 }
 
 io.on('connection', (socket) => {
-  const authPayload = verifyToken(socket.handshake.auth?.token);
-  if (authPayload) {
-    const user = getUserById(authPayload.id);
-    if (user) socket.user = user;
+  // A token that doesn't check out just means they play as a guest, it's
+  // never worth throwing over.
+  try {
+    const authPayload = verifyToken(socket.handshake.auth?.token);
+    if (authPayload) {
+      const user = getUserById(authPayload.id);
+      if (user) socket.user = user;
+    }
+  } catch (err) {
+    console.warn(`[socket] auth lookup for ${socket.id} failed: ${err.message}`);
   }
 
-  socket.on('create-lobby', ({ name, password, timeControl } = {}, ack) => {
-    const { lobby, hostColor, token } = store.create({
+  // Every handler below goes through safeOn (see safeSocket.js): payload is
+  // always an object and ack is always a function, even if the client sent junk.
+  safeOn(socket, 'create-lobby', ({ name, password, timeControl }, ack) => {
+    if (!isOptionalText(name, NAME_MAX)) { ack({ ok: false, error: `Name must be ${NAME_MAX} characters or fewer.` }); return; }
+    if (!isOptionalText(password, PASSWORD_MAX)) { ack({ ok: false, error: `Password must be ${PASSWORD_MAX} characters or fewer.` }); return; }
+    if (timeControl && !isTimeControl(timeControl)) { ack({ ok: false, error: 'Unknown time control.' }); return; }
+
+    const result = store.create({
       hostSocketId: socket.id,
       hostName: socket.user?.username || name || 'Host',
       hostUserId: socket.user?.id || null,
       password,
       timeControl,
     });
+    if (result.error) { ack({ ok: false, error: result.error }); return; }
+
+    const { lobby, hostColor, token } = result;
     joinLobbyRoom(socket, lobby.code);
-    ack?.({ ok: true, code: lobby.code, color: hostColor, token, state: publicState(lobby) });
+    ack({ ok: true, code: lobby.code, color: hostColor, token, state: publicState(lobby) });
   });
 
-  socket.on('join-lobby', ({ code, name, password } = {}, ack) => {
+  safeOn(socket, 'join-lobby', ({ code, name, password }, ack) => {
+    const lobbyCode = parseCode(code);
+    if (!lobbyCode) { ack({ ok: false, error: 'No lobby found with that code.' }); return; }
+    if (!isOptionalText(name, NAME_MAX)) { ack({ ok: false, error: `Name must be ${NAME_MAX} characters or fewer.` }); return; }
+    if (!isOptionalText(password, PASSWORD_MAX)) { ack({ ok: false, error: 'Incorrect password.' }); return; }
+
     const result = store.join({
-      code: (code || '').toUpperCase(),
+      code: lobbyCode,
       socketId: socket.id,
       name: socket.user?.username || name || 'Guest',
       userId: socket.user?.id || null,
       password,
     });
-    if (result.error) { ack?.({ ok: false, error: result.error }); return; }
+    if (result.error) { ack({ ok: false, error: result.error }); return; }
 
     const { lobby, color, token } = result;
     joinLobbyRoom(socket, lobby.code);
     scheduleFlagTimer(lobby);
-    ack?.({ ok: true, code: lobby.code, color, token, state: publicState(lobby) });
+    ack({ ok: true, code: lobby.code, color, token, state: publicState(lobby) });
     socket.to(lobby.code).emit('opponent-joined', { state: publicState(lobby) });
   });
 
-  socket.on('spectate-lobby', ({ code } = {}, ack) => {
-    const result = store.spectate({ code: (code || '').toUpperCase(), socketId: socket.id });
-    if (result.error) { ack?.({ ok: false, error: result.error }); return; }
+  safeOn(socket, 'spectate-lobby', ({ code }, ack) => {
+    const lobbyCode = parseCode(code);
+    if (!lobbyCode) { ack({ ok: false, error: 'No lobby found with that code.' }); return; }
+
+    const result = store.spectate({ code: lobbyCode, socketId: socket.id });
+    if (result.error) { ack({ ok: false, error: result.error }); return; }
     joinLobbyRoom(socket, result.lobby.code);
-    ack?.({ ok: true, state: publicState(result.lobby) });
+    ack({ ok: true, state: publicState(result.lobby) });
   });
 
-  socket.on('rejoin-lobby', ({ code, token } = {}, ack) => {
-    const result = store.reclaim({ code: (code || '').toUpperCase(), token, socketId: socket.id });
-    if (result.error) { ack?.({ ok: false, error: result.error }); return; }
+  safeOn(socket, 'rejoin-lobby', ({ code, token }, ack) => {
+    const lobbyCode = parseCode(code);
+    if (!lobbyCode || typeof token !== 'string') { ack({ ok: false, error: 'Could not reconnect to that game.' }); return; }
+
+    const result = store.reclaim({ code: lobbyCode, token, socketId: socket.id });
+    if (result.error) { ack({ ok: false, error: result.error }); return; }
     joinLobbyRoom(socket, result.lobby.code);
-    ack?.({ ok: true, color: result.color, state: publicState(result.lobby) });
+    ack({ ok: true, color: result.color, state: publicState(result.lobby) });
     socket.to(result.lobby.code).emit('opponent-reconnected', { color: result.color });
   });
 
-  socket.on('list-lobbies', (_payload, ack) => {
-    ack?.(store.listPublic());
+  safeOn(socket, 'list-lobbies', (_payload, ack) => {
+    ack(store.listPublic());
   });
 
-  socket.on('make-move', ({ from, to, promotion } = {}, ack) => {
+  safeOn(socket, 'make-move', ({ from, to, promotion }, ack) => {
+    if (!isSquare(from) || !isSquare(to) || (promotion != null && !PROMOTION_PIECES.includes(promotion))) {
+      ack({ ok: false, error: 'Illegal move.' });
+      return;
+    }
+
     const lobby = store.getBySocket(socket.id);
-    if (!lobby) { ack?.({ ok: false, error: 'Not in a lobby.' }); return; }
+    if (!lobby) { ack({ ok: false, error: 'Not in a lobby.' }); return; }
 
     const color = store.colorOf(lobby, socket.id);
-    if (!color) { ack?.({ ok: false, error: 'Spectators cannot move.' }); return; }
-    if (lobby.chess.turn() !== color) { ack?.({ ok: false, error: 'Not your turn.' }); return; }
+    if (!color) { ack({ ok: false, error: 'Spectators cannot move.' }); return; }
+    // no moving before the opponent joins or after the game's over
+    if (lobby.status !== 'active') { ack({ ok: false, error: 'Game is not in progress.' }); return; }
+    if (lobby.chess.turn() !== color) { ack({ ok: false, error: 'Not your turn.' }); return; }
 
     if (lobby.clocks) {
       const elapsed = Date.now() - lobby.lastMoveAt;
       const remaining = lobby.clocks[color] - elapsed;
       if (remaining <= 0) {
         finishGame(lobby, { result: 'timeout', winner: color === 'w' ? 'b' : 'w' });
-        ack?.({ ok: false, error: 'Time expired.' });
+        ack({ ok: false, error: 'Time expired.' });
         return;
       }
       lobby.clocks[color] = remaining;
@@ -279,7 +336,8 @@ io.on('connection', (socket) => {
     } catch {
       moveResult = null;
     }
-    if (!moveResult) { ack?.({ ok: false, error: 'Illegal move.' }); return; }
+    if (!moveResult) { ack({ ok: false, error: 'Illegal move.' }); return; }
+    lobby.moves.push(moveResult.san);
 
     if (lobby.clocks) {
       lobby.clocks[color] += resolveTimeControl(lobby.timeControl).incrementMs;
@@ -289,7 +347,7 @@ io.on('connection', (socket) => {
     const over = describeGameOver(lobby.chess);
     if (!over) scheduleFlagTimer(lobby); // if it's over, finishGame() below clears the timer instead
 
-    ack?.({ ok: true });
+    ack({ ok: true });
     io.to(lobby.code).emit('move-made', {
       move: moveResult,
       fen: lobby.chess.fen(),
@@ -303,20 +361,33 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('resign', (_payload, ack) => {
+  safeOn(socket, 'resign', (_payload, ack) => {
     const lobby = store.getBySocket(socket.id);
-    if (!lobby) { ack?.({ ok: false }); return; }
+    if (!lobby) { ack({ ok: false }); return; }
     const color = store.colorOf(lobby, socket.id);
-    if (!color) { ack?.({ ok: false }); return; }
+    if (!color) { ack({ ok: false }); return; }
+    // nothing to resign while waiting for an opponent (or once it's over), and
+    // letting it through would save a fake game every time
+    if (lobby.status !== 'active') { ack({ ok: false, error: 'Game is not in progress.' }); return; }
     finishGame(lobby, { result: 'resignation', winner: color === 'w' ? 'b' : 'w' });
-    ack?.({ ok: true });
+    ack({ ok: true });
   });
 
-  socket.on('request-rematch', (_payload, ack) => {
+  safeOn(socket, 'request-rematch', (_payload, ack) => {
     const lobby = store.getBySocket(socket.id);
-    if (!lobby) { ack?.({ ok: false }); return; }
+    if (!lobby) { ack({ ok: false }); return; }
     const color = store.colorOf(lobby, socket.id);
-    if (!color) { ack?.({ ok: false }); return; }
+    if (!color) { ack({ ok: false }); return; }
+    // a rematch mid-game would wipe the board
+    if (lobby.status !== 'finished') { ack({ ok: false, error: 'The game is not over yet.' }); return; }
+    // Both players have to still be here. If one is in their reconnect grace,
+    // the rematch swaps colors but their grace timer still has the old one, so
+    // it ends the new game with the player who left as the winner, and their
+    // seat never gets freed after that.
+    if (!lobby.players.w?.connected || !lobby.players.b?.connected) {
+      ack({ ok: false, error: 'Opponent has left.' });
+      return;
+    }
 
     if (lobby.rematchRequestedBy && lobby.rematchRequestedBy !== color) {
       store.rematch(lobby);
@@ -326,7 +397,7 @@ io.on('connection', (socket) => {
       lobby.rematchRequestedBy = color;
       socket.to(lobby.code).emit('rematch-requested', { by: color });
     }
-    ack?.({ ok: true });
+    ack({ ok: true });
   });
 
   // A dropped connection doesn't end the game or pause the clock (that
@@ -334,7 +405,7 @@ io.on('connection', (socket) => {
   // just starts a grace period during which their seat stays reserved for
   // rejoin-lobby to reclaim. If the grace period lapses without a reclaim,
   // the seat is freed and the opponent is told the player left for good.
-  socket.on('disconnect', () => {
+  safeOn(socket, 'disconnect', () => {
     const result = store.markDisconnected(socket.id);
     if (!result || !result.isPlayer) return;
 
