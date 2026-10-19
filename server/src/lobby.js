@@ -4,6 +4,12 @@ import { resolveTimeControl } from './timeControls.js';
 
 const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no 0/O/1/I — easy to misread
 const LIST_MAX = 50; // most lobbies list-lobbies sends back
+const MAX_LOBBIES = 1000; // most lobbies that can exist at once, see create()
+// Most games one visitor (one network, see clientKey) can have going at once.
+// Without it a handful of addresses could sit on all MAX_LOBBIES between them.
+// 10 so a house or a uni network sharing one address still has room, and it
+// matches the 20-socket limit per network (two players per game).
+const MAX_LOBBIES_PER_CLIENT = 10;
 
 function generateCode(existingCodes) {
   let code;
@@ -22,15 +28,41 @@ function makePlayer(socketId, name, userId) {
   return { socketId, name, userId: userId || null, token: randomUUID(), connected: true };
 }
 
+// whoever's sitting in a lobby (for a waiting one, that's the host)
+function hostOf(lobby) {
+  return lobby.players.w || lobby.players.b;
+}
+
 export class LobbyStore {
-  constructor() {
+  constructor({ maxLobbies = MAX_LOBBIES, maxPerClient = MAX_LOBBIES_PER_CLIENT } = {}) {
+    // a Map keeps them in the order they were made, which evictable() relies on
     this.lobbies = new Map(); // code -> lobby
     this.socketToLobby = new Map(); // socketId -> code
+    this.maxLobbies = maxLobbies;
+    this.maxPerClient = maxPerClient;
   }
 
-  create({ hostSocketId, hostName, hostUserId, password, timeControl }) {
+  // `hostClient` is who's asking (clientKey), for the per-visitor cap.
+  // `evicted` in the result is a lobby that got closed to make room, so the
+  // caller can tell whoever was in it.
+  create({ hostSocketId, hostClient = null, hostName, hostUserId, password, timeControl }) {
+    // let go of wherever this socket was first, so a host remaking their own
+    // lobby never counts against them below
     const left = this.release(hostSocketId);
     if (left.error) return left;
+    if (this.atClientLimit(hostClient)) {
+      return { error: `There are already ${this.maxPerClient} games going from your network. Finish one before starting another.` };
+    }
+    // Hard cap so no amount of lobby spam can run the server out of memory,
+    // even from lots of clients at once. When it's full, the game least likely
+    // to be missed makes room (see evictable()), so nobody can lock everyone
+    // else out by sitting on lobbies. Joining, watching and rejoining never hit this.
+    let evicted = null;
+    if (this.lobbies.size >= this.maxLobbies) {
+      evicted = this.evictable();
+      if (!evicted) return { error: 'The server is busy right now. Try again in a minute.' }; // every one's a game being played
+      this.deleteLobby(evicted);
+    }
 
     const code = generateCode(this.lobbies);
     const hostColor = Math.random() < 0.5 ? 'w' : 'b';
@@ -38,6 +70,7 @@ export class LobbyStore {
     const hostPlayer = makePlayer(hostSocketId, hostName, hostUserId);
     const lobby = {
       code,
+      hostClient, // who made it, for openLobbiesFrom()
       password: password || null,
       timeControl: timeControlKey,
       chess: new Chess(),
@@ -59,7 +92,43 @@ export class LobbyStore {
     };
     this.lobbies.set(code, lobby);
     this.socketToLobby.set(hostSocketId, code);
-    return { lobby, hostColor, token: hostPlayer.token };
+    return { lobby, hostColor, token: hostPlayer.token, evicted };
+  }
+
+  // Games this client made that aren't over: waiting for an opponent or
+  // being played. A waiting one counts even while its host is away (it's
+  // gone within WAITING_GRACE_MS anyway), otherwise dropping and reclaiming,
+  // or getting a mate to join one while the host's away, would sneak extra
+  // games past the limit. Finished ones don't count, but a rematch checks
+  // again (see rematch()) since that starts them back up.
+  openLobbiesFrom(client) {
+    let n = 0;
+    for (const l of this.lobbies.values()) {
+      if (l.hostClient === client && l.status !== 'finished') n++;
+    }
+    return n;
+  }
+
+  atClientLimit(client) {
+    return !!client && this.openLobbiesFrom(client) >= this.maxPerClient;
+  }
+
+  // Which lobby to close when the server's full, least missed first: a
+  // waiting one whose host has gone, then a finished game (the result's
+  // already saved, it only costs them a rematch), then the oldest one still
+  // waiting for an opponent. A game actually being played is never touched.
+  evictable() {
+    let finished = null;
+    let waiting = null;
+    for (const l of this.lobbies.values()) { // oldest first
+      if (l.status === 'waiting') {
+        if (!hostOf(l)?.connected) return l;
+        waiting ??= l;
+      } else if (l.status === 'finished') {
+        finished ??= l;
+      }
+    }
+    return finished || waiting;
   }
 
   join({ code, socketId, name, userId, password }) {
@@ -128,8 +197,14 @@ export class LobbyStore {
     return { lobby, color };
   }
 
-  // Resets the board for a rematch, swapping who plays which color.
+  // Resets the board for a rematch, swapping who plays which color. Counts
+  // towards the host's limit like a new game would, otherwise finishing and
+  // rematching would let one network keep any number of games going.
   rematch(lobby) {
+    if (this.atClientLimit(lobby.hostClient)) {
+      // the limit's on the host's network, which might not be whoever pressed accept
+      return { error: `The host's network already has ${this.maxPerClient} games going, so a rematch can't start right now.` };
+    }
     lobby.chess = new Chess();
     lobby.moves = [];
     lobby.status = 'active';
@@ -141,6 +216,7 @@ export class LobbyStore {
     const [w, b] = [lobby.players.w, lobby.players.b];
     lobby.players.w = b;
     lobby.players.b = w;
+    return {};
   }
 
   getByCode(code) {
@@ -166,11 +242,14 @@ export class LobbyStore {
     const rows = [];
     for (const l of this.lobbies.values()) {
       if (l.status === 'finished') continue;
+      // a waiting lobby whose host dropped is only kept so they can refresh back in,
+      // there's nobody there to play (and lobby spam would otherwise fill the list)
+      if (l.status === 'waiting' && !hostOf(l)?.connected) continue;
       rows.push({
         code: l.code,
         hasPassword: !!l.password,
         timeControl: l.timeControl,
-        hostName: (l.players.w || l.players.b)?.name || 'Anonymous',
+        hostName: hostOf(l)?.name || 'Anonymous',
         joinable: !(l.players.w && l.players.b),
         players: { w: l.players.w?.name || null, b: l.players.b?.name || null },
         spectators: l.spectators.size,

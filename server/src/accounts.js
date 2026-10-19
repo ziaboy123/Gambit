@@ -61,7 +61,21 @@ function applyRatingResult(userId, timeControl, newElo, outcome) {
 // `result` is a short machine label ('checkmate' | 'resignation' | 'timeout' | 'stalemate' | 'draw').
 // `winner` is 'w' | 'b' | null (null = draw). Only computes rating changes when both sides are
 // logged-in users — a guest in the game just means the result is saved unrated.
-export function recordGame({ whiteUserId, blackUserId, whiteName, blackName, timeControl, result, winner, moves }) {
+// All or nothing: if saving fails halfway (database locked, disk full), the
+// rating changes get undone too instead of sticking without a game to show for them.
+export function recordGame(game) {
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const record = saveGame(game);
+    db.exec('COMMIT');
+    return record;
+  } catch (err) {
+    try { db.exec('ROLLBACK'); } catch { /* sqlite already rolled it back */ }
+    throw err;
+  }
+}
+
+function saveGame({ whiteUserId, blackUserId, whiteName, blackName, timeControl, result, winner, moves }) {
   const rated = !!(whiteUserId && blackUserId);
   let whiteBefore = null, blackBefore = null, whiteAfter = null, blackAfter = null;
 

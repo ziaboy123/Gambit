@@ -773,6 +773,7 @@ themeSelect.addEventListener('change', () => {
 
 let socket = null;
 let lobbyPollTimer = null;
+let socketRefusal = ''; // the server's "too many tabs" message, while it's the one showing
 
 function ensureSocket() {
   if (socket) return socket;
@@ -782,6 +783,21 @@ function ensureSocket() {
 }
 
 function setupSocketListeners() {
+  // The server turns a connection away when too many tabs are open on one
+  // network. socket.io won't retry that one by itself, so say why and drop
+  // the dead socket so the next try opens a fresh one.
+  const s = socket;
+  s.on('connect_error', (err) => {
+    if (s.active) return; // just a network blip, socket.io keeps retrying on its own
+    onlineError.textContent = socketRefusal = err.message;
+    if (socket === s) { disconnectSocket(); socket = null; }
+  });
+  // got in on a later try (the lobby list retries every few seconds), so the warning's out of date
+  s.on('connect', () => {
+    if (socketRefusal && onlineError.textContent === socketRefusal) onlineError.textContent = '';
+    socketRefusal = '';
+  });
+
   socket.on('opponent-joined', ({ state }) => {
     startGame({ mode: 'online', color: myColor, state });
   });
@@ -841,10 +857,35 @@ function setupSocketListeners() {
     rematchBtn.textContent = 'Accept Rematch';
   });
 
+  // the server couldn't start the rematch (the host's network is at its game limit)
+  socket.on('rematch-refused', ({ error }) => {
+    if (gameMode !== 'online') return;
+    rematchBtn.classList.add('hidden');
+    ui.setStatus(error || 'Rematch not available.');
+  });
+
   socket.on('rematch-started', ({ state }) => {
     if (gameMode !== 'online') return;
     myColor = myColor === 'w' ? 'b' : 'w'; // server always swaps colors on rematch
     startGame({ mode: 'online', color: myColor, state });
+  });
+
+  // When the server's full it closes an old lobby nobody's playing in (one
+  // still waiting for an opponent, or a finished game) to make room, so say
+  // so instead of waiting forever. Games being played never get this.
+  socket.on('lobby-closed', ({ reason }) => {
+    clearSession();
+    rematchBtn.classList.add('hidden'); // nothing left to rematch in
+    if (!menuScreen.classList.contains('hidden') && !menuWaiting.classList.contains('hidden')) {
+      showMenuView(menuOnline);
+      onlineError.textContent = reason;
+    } else if (gameMode === 'online' && !onlineGameEnded) {
+      // a host who refreshed back into their waiting lobby, there's no game to move in now
+      onlineGameEnded = true;
+      inputLocked = true;
+      resignBtn.classList.add('hidden');
+      ui.setStatus(reason);
+    }
   });
 }
 
@@ -954,6 +995,9 @@ document.getElementById('join-submit').addEventListener('click', async () => {
 });
 
 document.getElementById('lobby-cancel').addEventListener('click', () => {
+  // tell the server first so the lobby goes now, not after the refresh grace
+  // (it'd count towards the network's game limit till then)
+  if (socket?.connected) socket.emit('leave-lobby', {});
   disconnectSocket();
   socket = null;
   clearSession();

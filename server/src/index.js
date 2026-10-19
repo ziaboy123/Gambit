@@ -12,10 +12,26 @@ import {
 } from './accounts.js';
 import { puzzleForDate, getPuzzle, todayString } from './puzzles.js';
 import { hasSolved, recordSolve } from './puzzleSolves.js';
-import { safeOn } from './safeSocket.js';
+import { safeOn, safeTimeout } from './safeSocket.js';
+import { clientKey, ConnectionCounter, RateLimiter } from './clientLimits.js';
 
 const PORT = process.env.PORT || 3004;
+// Unset means every interface, like before. HOST=127.0.0.1 in production
+// means only nginx on the same box can reach Node at all.
+const HOST = process.env.HOST || undefined;
 const RECONNECT_GRACE_MS = 30000;
+// A lobby nobody's joined yet only has to survive its host refreshing the
+// page, which takes a few seconds, so it doesn't need the full 30s.
+const WAITING_GRACE_MS = 15000;
+
+// Per-visitor limits (see clientLimits.js), so one client looping connect ->
+// create-lobby -> disconnect can't fill the server's memory. A household
+// shares one address and every open tab is its own socket, so they're generous.
+const MAX_SOCKETS_PER_CLIENT = 20;
+// Same idea one layer down, for connections that never get as far as
+// io.use() below. Higher, so a real visitor always hits the friendly error first.
+const MAX_RAW_CONNECTIONS_PER_CLIENT = 40;
+const LOBBY_CREATES_PER_MINUTE = 10;
 
 const app = express();
 app.use(express.json());
@@ -28,8 +44,41 @@ app.use((req, res, next) => {
 });
 
 const httpServer = createServer(app);
+const rawConnections = new ConnectionCounter();
+// Handshakes that got the OK below but haven't reached io.engine's
+// 'connection' yet (that's a tick later). Without these, a pile of
+// handshakes sent down one connection at once all got past the check
+// before the first one was counted.
+const pendingHandshakes = new ConnectionCounter();
 const io = new Server(httpServer, {
   cors: { origin: '*' },
+  // Runs for every brand new connection before socket.io sees it. One that
+  // never finishes connecting still sits in memory for ~45s, so a client
+  // only gets so many at once.
+  allowRequest: (req, callback) => {
+    let allowed = true;
+    try {
+      const client = clientKey(req.headers, req.socket?.remoteAddress);
+      allowed = rawConnections.count(client) + pendingHandshakes.count(client) < MAX_RAW_CONNECTIONS_PER_CLIENT;
+      if (allowed) {
+        pendingHandshakes.add(client);
+        setImmediate(() => pendingHandshakes.remove(client)); // counted in rawConnections by then
+      }
+    } catch (err) {
+      console.warn(`[limits] connection check failed: ${err.message}`); // not worth locking everyone out over
+    }
+    callback(allowed ? null : 'Too many connections.', allowed);
+  },
+});
+io.engine.on('connection', (conn) => {
+  // a throw in here would be an unhandled rejection inside engine.io, which takes Node down
+  try {
+    const client = clientKey(conn.request?.headers, conn.remoteAddress);
+    rawConnections.add(client);
+    conn.once('close', () => rawConnections.remove(client));
+  } catch (err) {
+    console.warn(`[limits] couldn't count connection: ${err.message}`);
+  }
 });
 
 app.get('/health', (_req, res) => res.json({ ok: true }));
@@ -128,6 +177,8 @@ app.post('/api/puzzle/attempt', softAuth, (req, res) => {
 // ── Realtime game ────────────────────────────────────────────────────
 
 const store = new LobbyStore();
+const lobbyCreates = new RateLimiter({ limit: LOBBY_CREATES_PER_MINUTE, windowMs: 60000 });
+const socketsByClient = new ConnectionCounter();
 
 // Socket payloads come straight from the client, so check the fields before
 // using them. The length limits match the client's maxlength on the inputs,
@@ -175,7 +226,9 @@ function scheduleFlagTimer(lobby) {
 
   const toMove = lobby.chess.turn();
   const ms = Math.max(lobby.clocks[toMove], 0);
-  lobby.flagTimer = setTimeout(() => finishGame(lobby, { result: 'timeout', winner: toMove === 'w' ? 'b' : 'w' }), ms);
+  lobby.flagTimer = safeTimeout(`flag timer for ${lobby.code}`, () => {
+    finishGame(lobby, { result: 'timeout', winner: toMove === 'w' ? 'b' : 'w' });
+  }, ms);
 }
 
 // How the current position ends, if it's over — `winner` is filled in by
@@ -196,16 +249,23 @@ function finishGame(lobby, { result, winner }) {
   if (lobby.flagTimer) clearTimeout(lobby.flagTimer);
   lobby.flagTimer = null;
 
-  const record = recordGame({
-    whiteUserId: lobby.players.w?.userId || null,
-    blackUserId: lobby.players.b?.userId || null,
-    whiteName: lobby.players.w?.name || 'White',
-    blackName: lobby.players.b?.name || 'Black',
-    timeControl: lobby.timeControl,
-    result,
-    winner: winner ?? null,
-    moves: lobby.moves,
-  });
+  // Saving can fail (database locked, disk full). The game's over either
+  // way, so log it and still tell both players, just without a rating change.
+  let record = null;
+  try {
+    record = recordGame({
+      whiteUserId: lobby.players.w?.userId || null,
+      blackUserId: lobby.players.b?.userId || null,
+      whiteName: lobby.players.w?.name || 'White',
+      blackName: lobby.players.b?.name || 'Black',
+      timeControl: lobby.timeControl,
+      result,
+      winner: winner ?? null,
+      moves: lobby.moves,
+    });
+  } catch (err) {
+    console.error(`[game] couldn't save game ${lobby.code} (${result}): ${err.message}`);
+  }
 
   io.to(lobby.code).emit('game-over', { result, winner: winner ?? null, ratings: record });
   return record;
@@ -217,13 +277,58 @@ function finishGame(lobby, { result, winner }) {
 // actually in now. socket.io auto-joins a room matching the socket's own
 // id; that one is left alone.
 function joinLobbyRoom(socket, code) {
-  for (const room of socket.rooms) {
-    if (room !== socket.id) socket.leave(room);
-  }
+  leaveLobbyRooms(socket);
   socket.join(code);
 }
 
+function leaveLobbyRooms(socket) {
+  for (const room of socket.rooms) {
+    if (room !== socket.id) socket.leave(room);
+  }
+}
+
+// Tells whoever's still in a lobby the store closed to make room, and takes
+// them out of its room, since its code can be handed out again.
+function closeLobbyRoom(code) {
+  io.to(code).emit('lobby-closed', { reason: 'The server filled up, so this game was closed. Make a new one to keep playing.' });
+  io.in(code).socketsLeave(code);
+}
+
+// Caps how many sockets (open tabs) one client can have. Counted here rather
+// than on 'connection', otherwise a burst of connects sent all at once would
+// all get past the check before the first one was counted.
+io.use((socket, next) => {
+  let refusal = null;
+  let uncount = null;
+  try {
+    const client = clientKey(socket.handshake.headers, socket.handshake.address);
+    socket.data.client = client;
+    if (socketsByClient.count(client) >= MAX_SOCKETS_PER_CLIENT) {
+      refusal = new Error('Too many Gambit tabs are open on your network. Close a few and try again.');
+      refusal.data = { reason: 'too-many-connections' };
+    } else {
+      socketsByClient.add(client);
+      let counted = true;
+      uncount = () => {
+        if (!counted) return;
+        counted = false;
+        socketsByClient.remove(client);
+      };
+      socket.once('disconnect', uncount);
+    }
+  } catch (err) {
+    console.warn(`[limits] socket check for ${socket.id} failed: ${err.message}`); // not worth locking everyone out over
+  }
+  next(refusal);
+  // If the client drops before socket.io finishes connecting it, the socket
+  // just gets binned without a 'disconnect', so check once it's had its go.
+  if (uncount) setImmediate(() => { if (!socket.connected) uncount(); });
+});
+
 io.on('connection', (socket) => {
+  // set by io.use() above, worked out again only if that somehow didn't run
+  const client = socket.data.client ?? clientKey(socket.handshake.headers, socket.handshake.address);
+
   // A token that doesn't check out just means they play as a guest, it's
   // never worth throwing over.
   try {
@@ -242,17 +347,24 @@ io.on('connection', (socket) => {
     if (!isOptionalText(name, NAME_MAX)) { ack({ ok: false, error: `Name must be ${NAME_MAX} characters or fewer.` }); return; }
     if (!isOptionalText(password, PASSWORD_MAX)) { ack({ ok: false, error: `Password must be ${PASSWORD_MAX} characters or fewer.` }); return; }
     if (timeControl && !isTimeControl(timeControl)) { ack({ ok: false, error: 'Unknown time control.' }); return; }
+    // only lobbies that actually got made count towards the limit (see record() below)
+    if (!lobbyCreates.allows(client)) { ack({ ok: false, error: "You're making games too fast. Wait a minute and try again." }); return; }
 
     const result = store.create({
       hostSocketId: socket.id,
+      hostClient: client,
       hostName: socket.user?.username || name || 'Host',
       hostUserId: socket.user?.id || null,
       password,
       timeControl,
     });
     if (result.error) { ack({ ok: false, error: result.error }); return; }
+    lobbyCreates.record(client);
 
-    const { lobby, hostColor, token } = result;
+    const { lobby, hostColor, token, evicted } = result;
+    // the server was full so an old lobby got closed to make room (before
+    // joining the new room, in case the new lobby got the same code)
+    if (evicted) closeLobbyRoom(evicted.code);
     joinLobbyRoom(socket, lobby.code);
     ack({ ok: true, code: lobby.code, color: hostColor, token, state: publicState(lobby) });
   });
@@ -302,6 +414,16 @@ io.on('connection', (socket) => {
 
   safeOn(socket, 'list-lobbies', (_payload, ack) => {
     ack(store.listPublic());
+  });
+
+  // Cancel on the waiting screen. Bins the lobby straight away instead of
+  // leaving it in its refresh grace, where it'd still count towards the
+  // network's game limit for a few seconds.
+  safeOn(socket, 'leave-lobby', (_payload, ack) => {
+    const result = store.release(socket.id);
+    if (result.error) { ack({ ok: false, error: result.error }); return; }
+    leaveLobbyRooms(socket);
+    ack({ ok: true });
   });
 
   safeOn(socket, 'make-move', ({ from, to, promotion }, ack) => {
@@ -390,7 +512,14 @@ io.on('connection', (socket) => {
     }
 
     if (lobby.rematchRequestedBy && lobby.rematchRequestedBy !== color) {
-      store.rematch(lobby);
+      const rematch = store.rematch(lobby);
+      if (rematch.error) {
+        // tell both of them, otherwise whoever asked first sits there waiting forever
+        lobby.rematchRequestedBy = null;
+        io.to(lobby.code).emit('rematch-refused', { error: rematch.error });
+        ack({ ok: false, error: rematch.error });
+        return;
+      }
       scheduleFlagTimer(lobby);
       io.to(lobby.code).emit('rematch-started', { state: publicState(lobby) });
     } else {
@@ -412,12 +541,16 @@ io.on('connection', (socket) => {
     const { lobby, color } = result;
     socket.to(lobby.code).emit('opponent-disconnected', { color });
 
-    lobby.disconnectTimers[color] = setTimeout(() => {
-      if (lobby.status === 'active') {
-        finishGame(lobby, { result: 'abandonment', winner: color === 'w' ? 'b' : 'w' });
+    const grace = lobby.status === 'waiting' ? WAITING_GRACE_MS : RECONNECT_GRACE_MS;
+    lobby.disconnectTimers[color] = safeTimeout(`reconnect grace for ${lobby.code}`, () => {
+      try {
+        if (lobby.status === 'active') {
+          finishGame(lobby, { result: 'abandonment', winner: color === 'w' ? 'b' : 'w' });
+        }
+      } finally {
+        store.finalizeDisconnect(lobby, color); // the seat still gets freed even if ending the game blew up
       }
-      store.finalizeDisconnect(lobby, color);
-    }, RECONNECT_GRACE_MS);
+    }, grace);
   });
 });
 
@@ -434,4 +567,4 @@ app.get(/^\/gambit(\/.*)?$/, (_req, res) => {
   res.sendFile(path.join(clientDist, 'index.html'));
 });
 
-httpServer.listen(PORT, () => console.log(`Gambit server running on :${PORT}`));
+httpServer.listen(PORT, HOST, () => console.log(`Gambit server running on ${HOST || ''}:${PORT}`));

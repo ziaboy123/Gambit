@@ -30,3 +30,16 @@ export function safeOn(socket, event, handler) {
     }
   });
 }
+
+// Same idea for timers (flag fall, reconnect grace). Their callbacks run long
+// after the handler that set them has returned, so safeOn can't catch what
+// they throw, and an uncaught throw in there would take every game down too.
+export function safeTimeout(label, fn, ms) {
+  return setTimeout(() => {
+    try {
+      fn();
+    } catch (err) {
+      console.error(`[timer] ${label} failed: ${err?.message || err}`);
+    }
+  }, ms);
+}
