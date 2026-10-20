@@ -327,6 +327,7 @@ const ALL_MENU_VIEWS = [menuHome, menuOnline, menuWaiting, menuAuth, menuLeaderb
 function showMenuView(view) {
   ALL_MENU_VIEWS.forEach((v) => v.classList.add('hidden'));
   view.classList.remove('hidden');
+  menuScreen.scrollTop = 0; // the menu scrolls on short screens, so each view starts at the top
   onlineError.textContent = '';
   if (view === menuOnline) startLobbyPolling(); else stopLobbyPolling();
 }
@@ -955,6 +956,22 @@ async function spectateLobby(code) {
   if (!res.ok) { onlineError.textContent = res.error || 'Could not watch that game.'; return; }
   startGame({ mode: 'spectator', color: 'w', state: res.state });
 }
+
+// the error sits under the lobby list, so on short screens it'd show up off the bottom unnoticed
+new MutationObserver(() => {
+  if (onlineError.textContent) onlineError.scrollIntoView({ block: 'nearest' });
+}).observe(onlineError, { childList: true, characterData: true, subtree: true });
+
+// room passwords are typed hidden, "Show" lets you check one before you share it
+document.querySelectorAll('.menu-password-toggle').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    const input = document.getElementById(btn.dataset.target);
+    const show = input.type === 'password';
+    input.type = show ? 'text' : 'password';
+    btn.textContent = show ? 'Hide' : 'Show';
+    btn.setAttribute('aria-label', show ? 'Hide password' : 'Show password');
+  });
+});
 
 function escapeHtml(str) {
   const div = document.createElement('div');

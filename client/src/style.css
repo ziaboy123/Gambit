@@ -194,12 +194,15 @@ html, body {
   inset: 0;
   z-index: 10;
   display: flex;
-  align-items: center;
-  justify-content: center;
+  /* scrolls when a view's taller than the window (Play Online on a laptop), or the top and Back button got cut off */
+  overflow-y: auto;
+  padding: 16px 0;
   background: radial-gradient(ellipse at center, #1c1712 0%, #0a0806 100%);
 }
 
 .menu-panel {
+  /* auto margins centre it like before but drop to 0 when it doesn't fit, so it starts at the top instead of going off-screen */
+  margin: auto;
   width: min(420px, 92vw);
   padding: 40px 36px;
   background: rgba(20,18,16,0.7);
@@ -215,7 +218,7 @@ html, body {
   font-size: 2.4rem;
   letter-spacing: 0.2em;
   color: var(--gold);
-  margin-bottom: 6px;
+  margin: 0 0 6px; /* it's an h1 now, so drop the browser's default margins */
 }
 
 .menu-tagline {
@@ -278,7 +281,8 @@ html, body {
   letter-spacing: 0.2em;
   text-transform: uppercase;
   color: var(--gold);
-  margin-bottom: 12px;
+  font-weight: normal; /* h2s now, keep them looking like the old divs */
+  margin: 0 0 12px;
 }
 
 .menu-input {
@@ -301,6 +305,16 @@ html, body {
   letter-spacing: 0.2em;
   font-weight: 700;
   text-align: center;
+}
+
+/* room passwords are hidden now, so a "Show" link sits at the right end of the box */
+.menu-password { position: relative; }
+.menu-password .menu-input { padding-right: 56px; }
+.menu-password-toggle {
+  position: absolute;
+  top: 0;
+  bottom: 8px; /* the input's margin-bottom, so it centres on the box */
+  right: 12px;
 }
 
 .menu-divider {

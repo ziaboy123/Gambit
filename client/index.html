@@ -11,7 +11,7 @@
 
   <div id="menu-screen" class="menu-screen">
     <div class="menu-panel">
-      <div class="menu-brand">GAMBIT</div>
+      <h1 class="menu-brand">GAMBIT</h1>
       <div class="menu-tagline">Medieval chess, in three dimensions.</div>
 
       <div id="account-bar" class="account-bar">
@@ -31,15 +31,18 @@
         <button id="menu-play-puzzle" class="menu-btn">Daily Puzzle</button>
         <button id="menu-leaderboard-btn" class="menu-btn">Leaderboard</button>
         <button id="menu-history-btn" class="menu-btn hidden">Match History</button>
-        <select id="menu-theme" class="menu-input menu-select"></select>
+        <select id="menu-theme" class="menu-input menu-select" aria-label="Board theme"></select>
       </div>
 
       <div id="menu-online" class="menu-view hidden">
         <div class="menu-section">
-          <div class="menu-section-title">Host a Game</div>
-          <input id="host-name" class="menu-input" type="text" placeholder="Your name" maxlength="20" />
-          <input id="host-password" class="menu-input" type="text" placeholder="Password (optional)" maxlength="20" />
-          <select id="host-timecontrol" class="menu-input menu-select">
+          <h2 class="menu-section-title">Host a Game</h2>
+          <input id="host-name" class="menu-input" type="text" placeholder="Your name" aria-label="Your name" maxlength="20" />
+          <div class="menu-password">
+            <input id="host-password" class="menu-input" type="password" placeholder="Password (optional)" aria-label="Lobby password (optional)" autocomplete="off" maxlength="20" />
+            <button class="account-link menu-password-toggle" data-target="host-password" aria-label="Show password">Show</button>
+          </div>
+          <select id="host-timecontrol" class="menu-input menu-select" aria-label="Time control">
             <option value="untimed">Untimed</option>
             <option value="bullet">Bullet · 2+1</option>
             <option value="blitz">Blitz · 5+0</option>
@@ -50,15 +53,18 @@
         </div>
         <div class="menu-divider"></div>
         <div class="menu-section">
-          <div class="menu-section-title">Join a Game</div>
-          <input id="join-name" class="menu-input" type="text" placeholder="Your name" maxlength="20" />
-          <input id="join-code" class="menu-input menu-input-code" type="text" placeholder="Room code" maxlength="6" />
-          <input id="join-password" class="menu-input" type="text" placeholder="Password (if required)" maxlength="20" />
+          <h2 class="menu-section-title">Join a Game</h2>
+          <input id="join-name" class="menu-input" type="text" placeholder="Your name" aria-label="Your name" maxlength="20" />
+          <input id="join-code" class="menu-input menu-input-code" type="text" placeholder="Room code" aria-label="Room code" maxlength="6" />
+          <div class="menu-password">
+            <input id="join-password" class="menu-input" type="password" placeholder="Password (if required)" aria-label="Lobby password (if required)" autocomplete="off" maxlength="20" />
+            <button class="account-link menu-password-toggle" data-target="join-password" aria-label="Show password">Show</button>
+          </div>
           <button id="join-submit" class="menu-btn menu-btn-primary">Join Lobby</button>
         </div>
         <div class="menu-divider"></div>
         <div class="menu-section">
-          <div class="menu-section-title">Open Games</div>
+          <h2 class="menu-section-title">Open Games</h2>
           <div id="lobby-list" class="lobby-list">
             <div class="lobby-list-empty">No open games right now.</div>
           </div>
@@ -68,7 +74,7 @@
       </div>
 
       <div id="menu-waiting" class="menu-view hidden">
-        <div class="menu-section-title">Room Code</div>
+        <h2 class="menu-section-title">Room Code</h2>
         <div id="lobby-code-display" class="lobby-code"></div>
         <div id="lobby-status" class="menu-status">Waiting for an opponent to join…</div>
         <button id="lobby-cancel" class="menu-btn menu-btn-ghost">Cancel</button>
@@ -76,9 +82,9 @@
 
       <div id="menu-auth" class="menu-view hidden">
         <div class="menu-section">
-          <div class="menu-section-title" id="auth-title">Log In</div>
-          <input id="auth-username" class="menu-input" type="text" placeholder="Username" maxlength="20" />
-          <input id="auth-password" class="menu-input" type="password" placeholder="Password" maxlength="60" />
+          <h2 class="menu-section-title" id="auth-title">Log In</h2>
+          <input id="auth-username" class="menu-input" type="text" placeholder="Username" aria-label="Username" maxlength="20" />
+          <input id="auth-password" class="menu-input" type="password" placeholder="Password" aria-label="Password" maxlength="60" />
           <button id="auth-submit" class="menu-btn menu-btn-primary">Log In</button>
           <button id="auth-toggle" class="menu-btn menu-btn-ghost">Need an account? Register</button>
         </div>
@@ -87,8 +93,8 @@
       </div>
 
       <div id="menu-leaderboard" class="menu-view hidden">
-        <div class="menu-section-title">Leaderboard</div>
-        <select id="leaderboard-timecontrol" class="menu-input menu-select">
+        <h2 class="menu-section-title">Leaderboard</h2>
+        <select id="leaderboard-timecontrol" class="menu-input menu-select" aria-label="Time control">
           <option value="bullet">Bullet · 2+1</option>
           <option value="blitz" selected>Blitz · 5+0</option>
           <option value="rapid">Rapid · 10+0</option>
@@ -99,7 +105,7 @@
       </div>
 
       <div id="menu-history" class="menu-view hidden">
-        <div class="menu-section-title">Match History</div>
+        <h2 class="menu-section-title">Match History</h2>
         <div id="history-list" class="ranked-list"></div>
         <button id="history-back" class="menu-btn menu-btn-ghost">Back</button>
       </div>
