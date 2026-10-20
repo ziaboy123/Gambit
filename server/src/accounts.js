@@ -170,6 +170,20 @@ export function getHistory(userId, limit = 50) {
   });
 }
 
+// Guest-vs-guest games (neither seat ever logged in) are deleted after
+// this long — see docs/online-safety.md. Rated/account games are kept
+// indefinitely since they're tied to a profile the player controls (can
+// be renamed or deleted on request — see the same doc).
+const GUEST_GAME_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
+
+export function pruneGuestGames(now = Date.now()) {
+  const cutoff = now - GUEST_GAME_RETENTION_MS;
+  const result = db.prepare(
+    'DELETE FROM games WHERE white_user_id IS NULL AND black_user_id IS NULL AND ended_at < ?'
+  ).run(cutoff);
+  return result.changes;
+}
+
 export function getGame(gameId) {
   const row = db.prepare('SELECT * FROM games WHERE id = ?').get(gameId);
   if (!row) return null;

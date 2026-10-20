@@ -68,6 +68,7 @@
           <div id="lobby-list" class="lobby-list">
             <div class="lobby-list-empty">No open games right now.</div>
           </div>
+          <a class="menu-report-link" href="mailto:mail@daniyalzia.co.uk?subject=Report%3A%20Gambit&amp;body=Player%20or%20name%20to%20report%3A%0A%0A%0AWhat%20happened%3A%0A%0A">Report a player or name</a>
         </div>
         <div id="online-error" class="menu-error"></div>
         <button id="menu-back" class="menu-btn menu-btn-ghost">Back</button>
@@ -87,6 +88,7 @@
           <input id="auth-password" class="menu-input" type="password" placeholder="Password" aria-label="Password" maxlength="60" />
           <button id="auth-submit" class="menu-btn menu-btn-primary">Log In</button>
           <button id="auth-toggle" class="menu-btn menu-btn-ghost">Need an account? Register</button>
+          <div id="auth-legal" class="menu-legal hidden">By creating an account you agree to the <a href="https://daniyalzia.co.uk/terms" target="_blank" rel="noopener">Terms</a> and confirm you're 13 or older. See <a href="https://daniyalzia.co.uk/privacy" target="_blank" rel="noopener">Privacy</a> for what's stored.</div>
         </div>
         <div id="auth-error" class="menu-error"></div>
         <button id="auth-back" class="menu-btn menu-btn-ghost">Back</button>
@@ -101,6 +103,7 @@
           <option value="classical">Classical · 30+0</option>
         </select>
         <div id="leaderboard-list" class="ranked-list"></div>
+        <a class="menu-report-link" href="mailto:mail@daniyalzia.co.uk?subject=Report%3A%20Gambit&amp;body=Player%20or%20name%20to%20report%3A%0A%0A%0AWhat%20happened%3A%0A%0A">Report a player or name</a>
         <button id="leaderboard-back" class="menu-btn menu-btn-ghost">Back</button>
       </div>
 
@@ -109,6 +112,19 @@
         <div id="history-list" class="ranked-list"></div>
         <button id="history-back" class="menu-btn menu-btn-ghost">Back</button>
       </div>
+
+      <footer class="menu-footer">
+        <div class="menu-footer-links">
+          <a href="https://daniyalzia.co.uk/privacy" target="_blank" rel="noopener">Privacy</a>
+          <span aria-hidden="true">·</span>
+          <a href="https://daniyalzia.co.uk/terms" target="_blank" rel="noopener">Terms</a>
+        </div>
+        <div class="menu-footer-credit">
+          Lord Commander uses <a href="https://stockfishchess.org/" target="_blank" rel="noopener">Stockfish</a>,
+          free software under <a href="%BASE_URL%stockfish/COPYING.txt" target="_blank" rel="noopener">GPLv3</a>
+          (<a href="https://github.com/nmrugg/stockfish.js/tree/v18.0.8" target="_blank" rel="noopener">source</a>).
+        </div>
+      </footer>
     </div>
   </div>
 

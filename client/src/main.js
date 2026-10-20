@@ -374,6 +374,7 @@ const authTitle = document.getElementById('auth-title');
 const authSubmit = document.getElementById('auth-submit');
 const authToggle = document.getElementById('auth-toggle');
 const authError = document.getElementById('auth-error');
+const authLegal = document.getElementById('auth-legal');
 
 function setAuthMode(mode) {
   authMode = mode;
@@ -381,6 +382,7 @@ function setAuthMode(mode) {
   authTitle.textContent = isLogin ? 'Log In' : 'Register';
   authSubmit.textContent = isLogin ? 'Log In' : 'Create Account';
   authToggle.textContent = isLogin ? 'Need an account? Register' : 'Already have an account? Log in';
+  authLegal.classList.toggle('hidden', isLogin);
   authError.textContent = '';
 }
 

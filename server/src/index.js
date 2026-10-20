@@ -8,7 +8,7 @@ import { TIME_CONTROLS, resolveTimeControl } from './timeControls.js';
 import { createToken, verifyToken } from './auth.js';
 import {
   registerUser, authenticateUser, looksLikeUsername, getUserById, getRatings,
-  getLeaderboard, getHistory, getGame, recordGame,
+  getLeaderboard, getHistory, getGame, recordGame, pruneGuestGames,
 } from './accounts.js';
 import { puzzleForDate, getPuzzle, todayString } from './puzzles.js';
 import { hasSolved, recordSolve } from './puzzleSolves.js';
@@ -612,6 +612,20 @@ io.on('connection', (socket) => {
     }, grace);
   });
 });
+
+// Guest-vs-guest games are deleted after 90 days (see docs/online-safety.md)
+// — runs once at startup (covers any gap from downtime, including a server
+// that's been down for a while) and then once a day after that.
+function runGuestGameRetention() {
+  try {
+    const removed = pruneGuestGames();
+    if (removed) console.log(`[retention] removed ${removed} guest game(s) older than 90 days`);
+  } catch (err) {
+    console.error(`[retention] guest game cleanup failed: ${err.message}`);
+  }
+}
+runGuestGameRetention();
+setInterval(runGuestGameRetention, 24 * 60 * 60 * 1000);
 
 // Serves the built client (client/dist) under /gambit and falls back to
 // its index.html for any other GET under that path, so the SPA loads on
