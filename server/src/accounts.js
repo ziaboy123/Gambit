@@ -4,24 +4,43 @@ import { STARTING_ELO, computeNewRating } from './elo.js';
 
 const USERNAME_RE = /^[a-zA-Z0-9_]{3,20}$/;
 
-export function registerUser(username, password) {
-  if (!USERNAME_RE.test(username)) {
+// Every account was made through registerUser, so anything else can't be one
+export function looksLikeUsername(name) {
+  return typeof name === 'string' && USERNAME_RE.test(name);
+}
+
+// The body is whatever JSON the client sent, so both have to actually be
+// strings first (an object for a name used to make sqlite throw, and an array
+// for a password blew up the hash).
+export async function registerUser(username, password) {
+  if (!looksLikeUsername(username)) {
     return { error: 'Username must be 3-20 characters, letters/numbers/underscore only.' };
   }
-  if (!password || password.length < 6) {
+  if (typeof password !== 'string' || password.length < 6) {
     return { error: 'Password must be at least 6 characters.' };
   }
   const existing = db.prepare('SELECT id FROM users WHERE username = ?').get(username);
   if (existing) return { error: 'That username is already taken.' };
 
-  const result = db.prepare('INSERT INTO users (username, password_hash, created_at) VALUES (?, ?, ?)')
-    .run(username, hashPassword(password), Date.now());
-  return { id: Number(result.lastInsertRowid), username };
+  const passwordHash = await hashPassword(password);
+  try {
+    const result = db.prepare('INSERT INTO users (username, password_hash, created_at) VALUES (?, ?, ?)')
+      .run(username, passwordHash, Date.now());
+    return { id: Number(result.lastInsertRowid), username };
+  } catch (err) {
+    // someone else grabbed the same name while this one was hashing
+    if (/UNIQUE constraint failed/.test(err.message)) return { error: 'That username is already taken.' };
+    throw err;
+  }
 }
 
-export function authenticateUser(username, password) {
+export async function authenticateUser(username, password) {
+  // no account has a name like that, so don't bother the database with it
+  if (!looksLikeUsername(username) || typeof password !== 'string') {
+    return { error: 'Incorrect username or password.' };
+  }
   const row = db.prepare('SELECT id, username, password_hash FROM users WHERE username = ?').get(username);
-  if (!row || !verifyPassword(password, row.password_hash)) {
+  if (!row || !(await verifyPassword(password, row.password_hash))) {
     return { error: 'Incorrect username or password.' };
   }
   return { id: row.id, username: row.username };

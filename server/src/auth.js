@@ -1,4 +1,5 @@
-import { randomBytes, scryptSync, timingSafeEqual, createHmac } from 'crypto';
+import { randomBytes, scrypt, timingSafeEqual, createHmac } from 'crypto';
+import { promisify } from 'util';
 
 const SECRET = process.env.AUTH_SECRET || 'dev-secret-change-in-production';
 if (!process.env.AUTH_SECRET) {
@@ -7,15 +8,20 @@ if (!process.env.AUTH_SECRET) {
 
 const TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 
-export function hashPassword(password) {
+// Each hash takes ~20ms of solid CPU. The async one does that on a background
+// thread, so a burst of logins can't freeze everyone's games while it hashes.
+// Same settings as scryptSync, so existing passwords still check out.
+const scryptAsync = promisify(scrypt);
+
+export async function hashPassword(password) {
   const salt = randomBytes(16).toString('hex');
-  const hash = scryptSync(password, salt, 64).toString('hex');
+  const hash = (await scryptAsync(password, salt, 64)).toString('hex');
   return `${salt}:${hash}`;
 }
 
-export function verifyPassword(password, stored) {
+export async function verifyPassword(password, stored) {
   const [salt, hash] = stored.split(':');
-  const candidate = scryptSync(password, salt, 64);
+  const candidate = await scryptAsync(password, salt, 64);
   const expected = Buffer.from(hash, 'hex');
   return candidate.length === expected.length && timingSafeEqual(candidate, expected);
 }

@@ -129,6 +129,19 @@ export class RateLimiter {
     w.count++;
   }
 
+  // Hands one back, for when an action turned out fine (a login that worked
+  // shouldn't count as a guess). Never goes below zero.
+  forgive(client) {
+    const w = this.windows.get(client);
+    if (w && w.resetAt > this.now() && w.count > 0) w.count--;
+  }
+
+  // How long until this client gets a fresh window, for "try again in N minutes"
+  msUntilReset(client) {
+    const w = this.windows.get(client);
+    return w ? Math.max(0, w.resetAt - this.now()) : 0;
+  }
+
   // Every window is the same length and gets added at the back, so the
   // expired ones are always at the front and we can stop at the first live one.
   sweep(now = this.now()) {

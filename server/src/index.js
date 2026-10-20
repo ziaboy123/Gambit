@@ -7,7 +7,7 @@ import { LobbyStore } from './lobby.js';
 import { TIME_CONTROLS, resolveTimeControl } from './timeControls.js';
 import { createToken, verifyToken } from './auth.js';
 import {
-  registerUser, authenticateUser, getUserById, getRatings,
+  registerUser, authenticateUser, looksLikeUsername, getUserById, getRatings,
   getLeaderboard, getHistory, getGame, recordGame,
 } from './accounts.js';
 import { puzzleForDate, getPuzzle, todayString } from './puzzles.js';
@@ -16,9 +16,10 @@ import { safeOn, safeTimeout } from './safeSocket.js';
 import { clientKey, ConnectionCounter, RateLimiter } from './clientLimits.js';
 
 const PORT = process.env.PORT || 3004;
-// Unset means every interface, like before. HOST=127.0.0.1 in production
-// means only nginx on the same box can reach Node at all.
-const HOST = process.env.HOST || undefined;
+// Only this machine by default: nginx on the same box is the one way in, so
+// nothing else on the LAN can talk to Node directly (and skip nginx's
+// headers). HOST=0.0.0.0 opens it up again if that's ever needed.
+const HOST = process.env.HOST || '127.0.0.1';
 const RECONNECT_GRACE_MS = 30000;
 // A lobby nobody's joined yet only has to survive its host refreshing the
 // page, which takes a few seconds, so it doesn't need the full 30s.
@@ -32,6 +33,18 @@ const MAX_SOCKETS_PER_CLIENT = 20;
 // io.use() below. Higher, so a real visitor always hits the friendly error first.
 const MAX_RAW_CONNECTIONS_PER_CLIENT = 40;
 const LOBBY_CREATES_PER_MINUTE = 10;
+// Login/register guesses. Per visitor (a household shares one, so it's roomy)
+// and per account, so spreading guesses over lots of addresses doesn't help.
+// A few typos never get near these.
+const LOGINS_PER_VISITOR = 20; // per LOGIN_WINDOW_MS
+// Wrong guesses at one account from one visitor. Keyed per visitor too, so someone
+// hammering a name off the leaderboard only locks themselves out, not the real owner.
+const LOGINS_PER_ACCOUNT = 10;
+// Backstop for one account across every visitor: high enough that it takes a lot
+// of separate addresses to lock a player out, low enough to slow a spread-out guesser.
+const LOGINS_PER_ACCOUNT_TOTAL = 100;
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const SIGNUPS_PER_VISITOR_PER_HOUR = 10;
 
 const app = express();
 app.use(express.json());
@@ -85,19 +98,62 @@ app.get('/health', (_req, res) => res.json({ ok: true }));
 
 // ── Accounts (REST) ──────────────────────────────────────────────────
 
-app.post('/api/register', (req, res) => {
+const loginsByVisitor = new RateLimiter({ limit: LOGINS_PER_VISITOR, windowMs: LOGIN_WINDOW_MS });
+const loginsByAccount = new RateLimiter({ limit: LOGINS_PER_ACCOUNT, windowMs: LOGIN_WINDOW_MS }); // key: account + visitor
+const loginsByAccountTotal = new RateLimiter({ limit: LOGINS_PER_ACCOUNT_TOTAL, windowMs: LOGIN_WINDOW_MS });
+const signupsByVisitor = new RateLimiter({ limit: SIGNUPS_PER_VISITOR_PER_HOUR, windowMs: 60 * 60 * 1000 });
+
+// The client shows `error` right under the form, so say when to come back
+function tooMany(res, limiter, key, what) {
+  const minutes = Math.max(1, Math.ceil(limiter.msUntilReset(key) / 60000));
+  res.set('Retry-After', String(minutes * 60));
+  res.status(429).json({ error: `Too many ${what}. Try again in ${minutes} minute${minutes === 1 ? '' : 's'}.` });
+}
+
+// Express 4 doesn't catch a rejected promise from an async route (Node would
+// go down on it), so this hands any throw to the error handler at the bottom.
+const asyncRoute = (fn) => (req, res, next) => fn(req, res, next).catch(next);
+
+app.post('/api/register', asyncRoute(async (req, res) => {
+  const visitor = clientKey(req.headers, req.socket.remoteAddress);
+  if (!signupsByVisitor.allows(visitor)) return tooMany(res, signupsByVisitor, visitor, 'sign-up attempts');
+  signupsByVisitor.record(visitor);
+
   const { username, password } = req.body || {};
-  const result = registerUser(username, password);
+  const result = await registerUser(username, password);
   if (result.error) return res.status(400).json(result);
   res.json({ token: createToken({ id: result.id, username: result.username }), user: result });
-});
+}));
 
-app.post('/api/login', (req, res) => {
+app.post('/api/login', asyncRoute(async (req, res) => {
   const { username, password } = req.body || {};
-  const result = authenticateUser(username, password);
+  const visitor = clientKey(req.headers, req.socket.remoteAddress);
+  // Only real-looking names get their own bucket: junk can't be an account
+  // anyway, and a 100 KB "name" kept as a key for 15 minutes adds up fast.
+  // Lowercased so flipping the case of a name doesn't get a fresh set of guesses.
+  const account = looksLikeUsername(username) ? username.toLowerCase() : null;
+  const accountVisitor = account && `${account}|${visitor}`;
+  if (!loginsByVisitor.allows(visitor)) return tooMany(res, loginsByVisitor, visitor, 'login attempts');
+  if (account && !loginsByAccount.allows(accountVisitor)) return tooMany(res, loginsByAccount, accountVisitor, 'login attempts for this account');
+  if (account && !loginsByAccountTotal.allows(account)) return tooMany(res, loginsByAccountTotal, account, 'login attempts for this account');
+  // counted before the password check, so a burst all at once can't sneak
+  // past while the hashes are still running
+  loginsByVisitor.record(visitor);
+  if (account) {
+    loginsByAccount.record(accountVisitor);
+    loginsByAccountTotal.record(account);
+  }
+
+  const result = await authenticateUser(username, password);
   if (result.error) return res.status(401).json(result);
+  // only wrong guesses use up the allowance, so a busy household never runs out
+  loginsByVisitor.forgive(visitor);
+  if (account) {
+    loginsByAccount.forgive(accountVisitor);
+    loginsByAccountTotal.forgive(account);
+  }
   res.json({ token: createToken({ id: result.id, username: result.username }), user: result });
-});
+}));
 
 function requireAuth(req, res, next) {
   const header = req.headers.authorization || '';
@@ -125,7 +181,10 @@ app.get('/api/me', requireAuth, (req, res) => {
 });
 
 app.get('/api/leaderboard', (req, res) => {
-  res.json(getLeaderboard(req.query.timeControl || 'blitz'));
+  // ?timeControl[]=a turns up as an array, so only take a name we actually have
+  const timeControl = req.query.timeControl || 'blitz';
+  if (!isTimeControl(timeControl)) return res.status(400).json({ error: 'Unknown time control.' });
+  res.json(getLeaderboard(timeControl));
 });
 
 app.get('/api/history/:userId', (req, res) => {
@@ -567,4 +626,20 @@ app.get(/^\/gambit(\/.*)?$/, (_req, res) => {
   res.sendFile(path.join(clientDist, 'index.html'));
 });
 
-httpServer.listen(PORT, HOST, () => console.log(`Gambit server running on ${HOST || ''}:${PORT}`));
+// Last stop for anything that went wrong. Express's own error page prints the
+// stack with the server's full paths unless NODE_ENV is 'production' (easy to
+// forget on the server), so visitors just get a short message and the details
+// stay in the log.
+app.use((err, req, res, next) => {
+  if (res.headersSent) return next(err); // too late to send JSON, Express just closes it
+  const status = Number.isInteger(err?.status) ? err.status : 500;
+  if (status >= 400 && status < 500) {
+    // broken JSON, too big a body etc. is the client's problem, not worth logging
+    const error = status === 404 ? 'Not found.' : status === 413 ? 'Request too large.' : 'Bad request.';
+    return res.status(status).json({ error });
+  }
+  console.error(`[http] ${req.method} ${req.path} failed: ${err?.message ?? err}`);
+  res.status(500).json({ error: 'Server error.' });
+});
+
+httpServer.listen(PORT, HOST, () => console.log(`Gambit server running on ${HOST}:${PORT}`));
