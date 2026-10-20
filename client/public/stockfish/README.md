@@ -23,3 +23,18 @@ npm uninstall stockfish
 
 The npm package isn't a runtime dependency — only these two static files
 are used, loaded directly as a Web Worker (see `src/ai/stockfish.js`).
+
+## Licence
+
+Stockfish is GPL-3.0. `COPYING.txt` in this folder is the licence text,
+copied verbatim from the `stockfish` npm package. The exact version used
+here is **v18.0.8** of [nmrugg/stockfish.js](https://github.com/nmrugg/stockfish.js)
+— confirmed by hashing `stockfish.js` here against each `18.0.x` npm
+release (the `.wasm` binary itself hasn't changed since `18.0.1`, so the
+hash alone doesn't pin a version; `stockfish.js` does). Corresponding
+source: https://github.com/nmrugg/stockfish.js/tree/v18.0.8, itself built
+from https://github.com/official-stockfish/Stockfish.
+
+If these files are ever refreshed to a newer version (see above), update
+`COPYING.txt` from the new npm package and re-check/update the version
+and links here and in the repo root README.

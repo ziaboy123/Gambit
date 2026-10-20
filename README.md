@@ -24,3 +24,9 @@ server/   — Node.js backend (Express + Socket.io)
 ## Assets
 
 Character models in `client/public/models/` (Cleric, Monk, Rogue, Warrior, Wizard) are from Quaternius's "RPG Character Pack," [CC0 licensed](https://creativecommons.org/publicdomain/zero/1.0/) — free for personal and commercial use, no attribution required. Source: [quaternius.com](https://quaternius.com/packs/rpgcharacters.html).
+
+The AI opponent runs [Stockfish](https://stockfishchess.org/), free software licensed under [GPL-3.0](client/public/stockfish/COPYING.txt). See [`client/public/stockfish/README.md`](client/public/stockfish/README.md) for the exact version and source link.
+
+## Licence
+
+This project's own code is MIT licensed — see [LICENSE](LICENSE). The Stockfish files under `client/public/stockfish/` are a separate GPL-3.0-licensed component (see above), not covered by the MIT licence.
